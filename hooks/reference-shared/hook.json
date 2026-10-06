@@ -1,8 +1,0 @@
-{
-  "schemaVersion": 1,
-  "name": "reference-shared",
-  "topology": "SharedV4",
-  "source": "ReferenceSharedHook.sol",
-  "contract": "ReferenceSharedHook",
-  "license": "MIT"
-}

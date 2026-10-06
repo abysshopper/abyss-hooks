@@ -1,0 +1,24 @@
+[profile.default]
+src = "hooks"
+test = "contracts/test"
+out = "out"
+libs = ["contracts/lib"]
+solc_version = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1
+via_ir = false
+bytecode_hash = "none"
+cbor_metadata = false
+ffi = false
+gas_limit = 2_147_483_648
+fs_permissions = [{ access = "read", path = "./" }]
+remappings = [
+    "@black-market/=contracts/src/",
+    "@uniswap/v4-core/=contracts/lib/v4-core/",
+    "solady/=contracts/lib/solady/src/",
+    "forge-std/=contracts/lib/forge-std/src/",
+]
+
+[rpc_endpoints]
+robinhood = "https://rpc.mainnet.chain.robinhood.com"

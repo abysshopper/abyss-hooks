@@ -1,0 +1,54 @@
+{
+  "chainId": 4663,
+  "rpcUrl": "https://rpc.mainnet.chain.robinhood.com",
+  "forkBlock": "latest",
+  "referenceProfileId": "0x7f7bc2249f42936142b848aa2d60020f722cfac5002e43d9e798fa0b834a3921",
+  "addresses": {
+    "registry": "0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee",
+    "core": "0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E",
+    "manager": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+    "oracleFactory": "0xe7feF2BC860B25bbdEB6F6AB96d88bAAa77ddad7",
+    "collectorFactory": "0xf444dC28Aa7F6B3a8Ad5B7B3975d05a7A1fDF409",
+    "collectorDeployer": "0xb2A46C9C21d207455258E78ec448a307D6ea1E92",
+    "feeFactory": "0x5c1FFa0F9fEB3f3f2704b752397f36f00072d252",
+    "tokenFactory": "0xa7467624E5A7a962f49a341Aa3fCE3eD20257b67",
+    "wrappedNative": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+    "admin": "0x119bB08D90753C5fa06C8f68cEb897af157D6416",
+    "referenceAdapter": "0xd9A7f35F2251dDa2506E50fCab2e52E6CE7a37d9",
+    "referenceLocker": "0xF0E5e79d0BC8243c1B0Afe031A39A8EAC5627f8b"
+  },
+  "codeHashes": {
+    "registry": "0x367c0b251aa52e2ef1cdf8a556d0371f55f62162cee842bada5bdb0611350dce",
+    "core": "0x1f6d7d5073aa313af2642688729e5f3d3070aec7cc2001781914cc81bddba834",
+    "manager": "0xbd3881180b547f5fe817545743cfb4343e96b1bc6640dcd70c106b0066e95626",
+    "oracleFactory": "0x974fb5c72d91ccb99f1eb4679a5d4432c82bbaa0906b1c2917ec4da3499b7b98",
+    "collectorFactory": "0x8d7e63e3b879fd1441acfd8d99aa99de80e2a4122e79e2f40bcb0198ddeffd00",
+    "collectorDeployer": "0x76ff2147fa0f93265659514e5d50f5256ab35effa6333d84b853038518231b94",
+    "feeFactory": "0x1450c1f37bf70a86bcf3dd7a1bc4cac31c78809fd5254c745861d93f5beb44d0",
+    "tokenFactory": "0x22fe76ee4d40f75168bb421ce8dcd368d50c912f3a61a328ba2241472bde98d1",
+    "wrappedNative": "0x5706be52f64875fee65a2cec0d80e47a23d8793cbe85d214b48445e2d05f5353",
+    "admin": "0xd430fd8520af8e22d8d578f0e4356c46dbb6dc6f3c6bb1f1677ff957bca4d5cd",
+    "referenceAdapter": "0x8aa3f5de93d74c275eb43742e5bc2ea3d9984520dbd6af675b2c630f7126a3fb",
+    "referenceLocker": "0x9d0c688892d2e79d84c4c1a4c75c486ce3c317b57903bf55afd10b6dba774df7"
+  },
+  "creationCode": {
+    "pool-adapter": {
+      "path": "creation/pool-adapter.hex",
+      "transactionHash": "0x175051aabfe5ffe96dbb9476bfb445df768f4e3ba441a75156c04b117f102e77",
+      "deployedAddress": "0xd9A7f35F2251dDa2506E50fCab2e52E6CE7a37d9",
+      "deploymentBlock": 80548093,
+      "creationCodeHash": "0x47afe4d3b4670bbe0ff78f6c6b286c860c35bf7c1c4fbf3a0d380ee0fb2dfa9c",
+      "creationBytes": 25818,
+      "constructorBytes": 256
+    },
+    "locker": {
+      "path": "creation/locker.hex",
+      "transactionHash": "0x41b322adb28f58688d4b5c10e6dec6d2cfb1cbe4bcddffa1c3328218b3339539",
+      "deployedAddress": "0xF0E5e79d0BC8243c1B0Afe031A39A8EAC5627f8b",
+      "deploymentBlock": 80548070,
+      "creationCodeHash": "0x880fc2621d8b1729d6dd4d440288adff99af76c7e7942723f03389745981b5e8",
+      "creationBytes": 15140,
+      "constructorBytes": 64
+    }
+  }
+}

@@ -1,40 +1,27 @@
-# abyss-hooks
+![Abyss](assets/abyss-social.webp)
 
-Community Uniswap V4 launch hooks for Black Market. Submit hooks through pull requests.
+# Abyss Hooks
 
-## Supported hooks
+Contribute pool-bound Uniswap V4 fee hooks to Black Market.
 
-| Topology | Base | Example |
-| --- | --- | --- |
-| Shared | `SharedLaunchHookBaseV1` | [reference-shared](hooks/reference-shared) |
-| Pool-bound | `PoolBoundLaunchHookBaseV1` | [reference-bound](hooks/reference-bound) |
+## Submit a hook
 
-The current contribution interface is a pure fee schedule:
+1. Copy [`hooks/reference-bound`](hooks/reference-bound) into `hooks/<your-hook>`.
+2. Implement your fee formula and complete `hook.json`, `integration.json`, and `review.md`.
+3. Run the checks below and open a pull request.
 
-```solidity
-function _calculateFee(uint256 amount, uint24 maximumPips)
-    internal pure override returns (uint256);
+See [CONTRIBUTING.md](CONTRIBUTING.md) for hook requirements and developer royalty terms.
+
+## Run the checks
+
+Requires Python 3.12 and the [pinned Foundry release](CONTRIBUTING.md#local-checks).
+
+```sh
+python -m pip install -r scripts/requirements.txt
+scripts/install-deps.sh
+python scripts/check_hooks.py --output evidence/qualification
 ```
 
-Retain the base constructor and outer behavior. Callback redesigns and V2 / Surge hooks are outside the current scope.
+CI launches a standard ERC20 with a WETH pool, trades both ways, and checks fee collection and royalty payouts against the expected amounts.
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for required files, input validation and local commands.
-
-Every PR checks the entire catalogue:
-
-- **Hook structure:** submission fields, registry bounds and validator tests.
-- **Hook qualification:** pinned upstream build, independent compiler reconstruction, size limits, real-manager tests and headless lifecycle execution.
-
-Actions provides an input-review summary and downloadable registration-input reports and runtime logs. The upstream revision is pinned in [scripts/upstream.json](scripts/upstream.json).
-
-Passing CI or merging a hook does not register it. Registry admission requires separate source/runtime review, approved economics, deployment provenance, author-controller consent and administrator registration.
-
-## Maintainer setup
-
-Enable Actions and require **Hook structure**, **Hook qualification** and PR review through branch protection or a ruleset. Review tooling, workflow and upstream-pin changes separately from hook submissions. Fork jobs must remain on disposable hosted runners without secrets, persisted credentials or broadcasting.
-
-## Licensing
-
-Each hook declares its SPDX license. Preserve dependency notices and verify that you have the rights to contribute the source.
+Maintainers review each submission. Production registry admission requires separate approval.

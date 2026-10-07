@@ -8,3 +8,29 @@
 - Provenance: independently authored from the disclosed upward-velocity schedule; no external fee-hook implementation was copied. MIT; dependency licenses remain applicable.
 - Risks: the signal is the last observed truncated movement, not raw spot velocity, volatility or a long-window TWAP. Clamping and pre-swap sampling introduce lag; a truncated feed may keep catching up while spot is flat. Warm-up charges the chosen minimum rather than inventing history. Idle time fades previous uplift toward that minimum. High sensitivity reaches the cap faster; zero sensitivity disables uplift. Clamping is not manipulation resistance, and inherited author code is not a sandbox. Runtime is 24,047 bytes under the unchanged pinned compiler, leaving 529 bytes below EIP-170. Policy changes require fresh measurement, artifact review and salts.
 - Qualification: 12 deterministic/fuzz arithmetic tests pass; real-fork launches check both fee modes, exact-input/output directions, frozen-rate wallet/liability accounting, genuine history and exact royalties. Five independent `(minimum, maximum, sensitivity)` policies charged these actual fast → post-warp rates in pips: `(250,10000,1000)` 958 → 368; `(750,20000,1000)` 1458 → 868; `(250,1000,2000)` 1000 → 486; `(0,10000,3000)` 2125 → 354; `(500,10000,0)` 500 → 500. Each isolated launch executes four setup trades, a measured trade, a 120-second warp and another measured trade (the trade helper advances another 12 seconds). Separate vectors prove falling/flat minimum fees and zero-maximum free trading. Fresh canonical V6 actors are source-shipped and fork-local; no V5 deployment is relabelled. Core-only/composed fixtures also pass malformed/trailing lifecycle and collector getter regressions. Null author identity is not production admission or author-control proof.
+
+## Expanded response verification
+
+The original 120-second comparison is a smoke check, not sufficient response-curve coverage. The real-fork harness additionally executes:
+
+- Eight independent `(minimum, maximum, sensitivity)` policies: `(750,10000,3000)`, `(750,10000,6000)`, `(250,10000,3000)`, `(750,20000,3000)`, `(750,1000,3000)`, `(500,10000,0)`, `(0,10000,3000)`, `(750,750,6000)`. Each launches in both input-token and quote-token fee modes.
+- Actual normalized spot rises of 1, 8, 17 and 80 ticks, created by exact-output swaps. Genuine oracle writes sample those moves at 1-, 12- and 60-second intervals; the 80-tick move is observed initially as 17 ticks because of the configured clamp.
+- Idle waits of 1, 5, 12, 30, 60, 120, 300, 900, 3,600, 86,400 and 604,800 seconds. Total signal age is observation interval plus idle wait, not idle wait alone.
+- Both buy and sell swaps at every point: 8 policies × 2 fee modes × 4 rises × 3 intervals × 11 waits × 2 directions = **4,224 measured charged swaps**. Every swap asserts wallet balances, manager deltas, the exact accrued fee, backing and oracle history. Rates must match the independently calculated bounded formula, decay monotonically with cap/floor plateaus, and reach these policies' minimum after one week.
+
+Each time point replays the same genuine sampled state with fork-local snapshots, isolating idle-age decay from new observations. These are actual executed swaps, not preview-only results. A separate sequential scenario exercises the history changes rather than resetting them.
+
+Observed baseline `(750,10000,3000)` rates in pips, with a 12-second observation interval; both fee modes and both directions agree:
+
+| Raw rise | Initially observed rise | Idle 1s | Idle 12s | Idle 120s | Idle 900s | Idle 1h | Idle 1d | Idle 1w |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 980 | 875 | 772 | 753 | 750 | 750 | 750 |
+| 8 | 8 | 2,596 | 1,750 | 931 | 776 | 756 | 750 | 750 |
+| 17 | 17 | 4,673 | 2,875 | 1,136 | 805 | 764 | 750 | 750 |
+| 80 | 17 | 4,673 | 2,875 | 1,136 | 805 | 764 | 750 | 750 |
+
+Matched controls: doubling sensitivity changes the 17-tick, 12-second-interval, 12-second-idle charge from 2,875 to 5,000 pips. Raising the maximum to 20,000 leaves that uncapped charge at 2,875, but changes the capped 1-second-interval/1-second-idle charge from 10,000 to 20,000. The low-ceiling policy stays at 1,000 through 120 seconds of idle, then drops to 913 at 300 seconds. Zero sensitivity and equal bounds remain constant at their selected minimum.
+
+Sequential baseline scenario: after an 80-tick raw rise, six quiet swaps spaced 12 seconds apart charge **2,875, 2,875, 2,875, 2,875, 2,250, 750** pips. The truncated oracle catches up despite nearly flat raw spot; fees do not necessarily fall on every subsequent trade. After a day at the minimum, a new eight-tick rise reactivates a 1,750-pip charge. The price-moving swap and the first observer swap still charge 750, proving freeze-before-observation ordering.
+
+Expanded qualification observed **27 dynamic tests passing** and **16 passing tests on each static fixture**. Each static fixture intentionally skips the 11 dynamic-policy-only scenarios. This is deterministic fork-local behavioral evidence, not live deployment, production admission or a manipulation-resistance proof. Compiler settings and submitted hook runtime are unchanged.

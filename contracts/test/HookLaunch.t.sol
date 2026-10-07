@@ -281,6 +281,183 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         }
     }
 
+    struct FeePolicy {
+        uint24 minimum;
+        uint24 maximum;
+        uint32 sensitivity;
+    }
+
+    function testActualFeeCurvesBaseline() public {
+        _assertPolicyResponse(FeePolicy(750, 10_000, 3_000), 0);
+    }
+
+    function testActualFeeCurvesDoubleSensitivity() public {
+        _assertPolicyResponse(FeePolicy(750, 10_000, 6_000), 1);
+    }
+
+    function testActualFeeCurvesLowerMinimum() public {
+        _assertPolicyResponse(FeePolicy(250, 10_000, 3_000), 2);
+    }
+
+    function testActualFeeCurvesHigherMaximum() public {
+        _assertPolicyResponse(FeePolicy(750, 20_000, 3_000), 3);
+    }
+
+    function testActualFeeCurvesLowCeiling() public {
+        _assertPolicyResponse(FeePolicy(750, 1_000, 3_000), 4);
+    }
+
+    function testActualFeeCurvesZeroSensitivity() public {
+        _assertPolicyResponse(FeePolicy(500, 10_000, 0), 5);
+    }
+
+    function testActualFeeCurvesZeroMinimum() public {
+        _assertPolicyResponse(FeePolicy(0, 10_000, 3_000), 6);
+    }
+
+    function testActualFeeCurvesEqualBounds() public {
+        _assertPolicyResponse(FeePolicy(750, 750, 6_000), 7);
+    }
+
+    function _assertPolicyResponse(FeePolicy memory policy, uint256 nonce) private {
+        vm.skip(!vm.envOr("HOOK_ORACLE_VELOCITY_EXAMPLE", false));
+        int24[4] memory rises = [int24(1), 8, 17, 80];
+        uint32[3] memory intervals = [uint32(1), 12, 60];
+        for (uint8 mode; mode < 2; ++mode) {
+            if ((vm.envUint("HOOK_FEE_MODE_FLAGS") & (uint256(1) << mode)) == 0) continue;
+            uint256 beforeLaunch = vm.snapshotState();
+            (,, PoolKey memory key) = _launchWithPolicy(
+                mode, 1_600_001 + mode * 100 + nonce, policy.minimum, policy.maximum, policy.sensitivity, false
+            );
+            _settleControlledPool(key);
+            for (uint256 movement; movement < rises.length; ++movement) {
+                for (uint256 interval; interval < intervals.length; ++interval) {
+                    uint256 beforeSignal = vm.snapshotState();
+                    _prepareRise(key, rises[movement], intervals[interval]);
+                    _assertActualFeeCurve(key, rises[movement], intervals[interval]);
+                    require(vm.revertToStateAndDelete(beforeSignal), "restore controlled movement");
+                }
+            }
+            require(vm.revertToStateAndDelete(beforeLaunch), "restore independent policy launch");
+        }
+    }
+
+    function testQuietTradingClearsClampedRiseAndNewRiseReactivatesFees() public {
+        vm.skip(!vm.envOr("HOOK_ORACLE_VELOCITY_EXAMPLE", false));
+        for (uint8 mode; mode < 2; ++mode) {
+            if ((vm.envUint("HOOK_FEE_MODE_FLAGS") & (uint256(1) << mode)) == 0) continue;
+            uint256 snapshot = vm.snapshotState();
+            (,, PoolKey memory key) = _launchWithPolicy(mode, 1_700_001 + mode, 750, 10_000, 3_000, false);
+            _settleControlledPool(key);
+            bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+            _prepareRise(key, 80, 12);
+            // Flat raw spot does not mean a flat truncated signal: it catches up by 17 ticks.
+            uint24[6] memory expected = [uint24(2_875), 2_875, 2_875, 2_875, 2_250, 750];
+            for (uint256 i; i < expected.length; ++i) {
+                assertEq(_trade(key, buyBase, -int256(1e12)), expected[i],
+                    "quiet swaps must expose clamp catch-up, then clear the upward signal");
+            }
+            assertEq(_tradeAfter(key, buyBase, -int256(1e12), 1 days), 750);
+            assertEq(_moveToNormalizedTick(key, 120), 750,
+                "a new price-moving swap must not charge for its own impact");
+            assertEq(_trade(key, buyBase, -int256(1e12)), 750,
+                "the observer updates only after freezing this swap's fee");
+            assertEq(_trade(key, buyBase, -int256(1e12)), 1_750,
+                "a newly sampled eight-tick rise must reactivate the uplift");
+            emit log_named_uint("reactivated actual charged rate", 1_750);
+            require(vm.revertToStateAndDelete(snapshot), "restore independent fee mode");
+        }
+    }
+
+    function _settleControlledPool(PoolKey memory key) private {
+        bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+        // One-sided launch liquidity starts at a range boundary. Enter it with a real swap.
+        assertEq(_trade(key, buyBase, -int256(1e12)),
+            PoolBoundLaunchHookBaseV2(address(key.hooks)).minimumHookFeePips(), "genuine warm-up charge");
+        _moveToNormalizedTick(key, 32);
+        for (uint256 i; i < 3; ++i) _trade(key, buyBase, -int256(1e12));
+        (,,, int24 sampledTick,,,,) =
+            ILaunchHookOracleV1(address(key.hooks)).oracleState(PoolId.unwrap(key.toId()));
+        assertEq(sampledTick, 32, "controlled starting spot and truncated oracle must agree");
+    }
+
+    function _prepareRise(PoolKey memory key, int24 rise, uint32 interval) private {
+        bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+        assertEq(_moveToNormalizedTick(key, 32 + rise),
+            PoolBoundLaunchHookBaseV2(address(key.hooks)).minimumHookFeePips(),
+            "a quiet price-moving swap charges the minimum, not its own impact");
+        assertEq(_tradeAfter(key, buyBase, -int256(1e12), interval),
+            PoolBoundLaunchHookBaseV2(address(key.hooks)).minimumHookFeePips(),
+            "sampling a rise cannot retroactively change the frozen charge");
+        (,,, int24 sampledTick,,,,) =
+            ILaunchHookOracleV1(address(key.hooks)).oracleState(PoolId.unwrap(key.toId()));
+        assertEq(sampledTick, 32 + (rise > 17 ? int24(17) : rise),
+            "real oracle must observe and clamp the chosen rise");
+    }
+
+    function _moveToNormalizedTick(PoolKey memory key, int24 normalizedTick) private returns (uint24 rate) {
+        bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+        int24 rawTick = buyBase ? -normalizedTick : normalizedTick;
+        // Mid-tick target avoids a one-tick ambiguity from exact-output integer rounding.
+        uint160 target = uint160((uint256(TickMath.getSqrtPriceAtTick(rawTick))
+            + TickMath.getSqrtPriceAtTick(rawTick + 1)) / 2);
+        (uint160 current,,,) = StateLibrary.getSlot0(manager, key.toId());
+        uint128 liquidity = StateLibrary.getLiquidity(manager, key.toId());
+        uint256 output = buyBase
+            ? SqrtPriceMath.getAmount1Delta(target, current, liquidity, false)
+            : SqrtPriceMath.getAmount0Delta(current, target, liquidity, false);
+        rate = _trade(key, buyBase, int256(output));
+        (, int24 actualTick,,) = StateLibrary.getSlot0(manager, key.toId());
+        assertEq(buyBase ? -actualTick : actualTick, normalizedTick,
+            "actual swap must create the requested raw normalized price movement");
+    }
+
+    function _assertActualFeeCurve(PoolKey memory key, int24 rawRise, uint32 interval) private {
+        uint32[11] memory idle = [uint32(1), 5, 12, 30, 60, 120, 300, 900, 3_600, 86_400, 604_800];
+        PoolBoundLaunchHookBaseV2 hook = PoolBoundLaunchHookBaseV2(address(key.hooks));
+        FeePolicy memory policy = FeePolicy(hook.minimumHookFeePips(),
+            hook.poolConfig(PoolId.unwrap(key.toId())).hookFeePips, hook.feeSensitivityPipsSecondsPerTick());
+        uint256 movement = uint256(uint24(rawRise > 17 ? int24(17) : rawRise));
+        uint256 snapshot = vm.snapshotState();
+        uint256[] memory ages = new uint256[](idle.length);
+        uint256[] memory rates = new uint256[](idle.length);
+        uint256 prior = policy.maximum;
+        for (uint256 i; i < idle.length; ++i) {
+            // Replay the SAME sampled state, not a chain of swaps that replaces the signal.
+            uint256 expected = policy.minimum + uint256(policy.sensitivity) * movement / (uint256(interval) + idle[i]);
+            if (expected > policy.maximum) expected = policy.maximum;
+            uint24 actual = _assertReplayedCharge(key, snapshot, idle[i], expected);
+            assertLe(actual, prior, "idle decay must be monotonic, allowing floor and cap plateaus");
+            ages[i] = uint256(interval) + idle[i];
+            rates[i] = actual;
+            prior = actual;
+        }
+        assertEq(rates[rates.length - 1], policy.minimum, "one week must floor these policies to their minimum");
+        emit log_string("actual fee response curve");
+        emit log_named_uint("fee mode", uint256(hook.poolConfig(PoolId.unwrap(key.toId())).feeMode));
+        emit log_named_uint("minimum", policy.minimum);
+        emit log_named_uint("maximum", policy.maximum);
+        emit log_named_uint("sensitivity", policy.sensitivity);
+        emit log_named_uint("raw rise ticks", uint256(uint24(rawRise)));
+        emit log_named_uint("observed rise ticks", movement);
+        emit log_named_uint("sample interval seconds", interval);
+        emit log_named_array("total observed age seconds", ages);
+        emit log_named_array("actual charged pips", rates);
+        require(vm.revertToStateAndDelete(snapshot), "delete curve replay snapshot");
+    }
+
+    function _assertReplayedCharge(PoolKey memory key, uint256 snapshot, uint32 idle, uint256 expected)
+        private returns (uint24 actual)
+    {
+        bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+        actual = _tradeAfter(key, buyBase, -int256(1e12), idle);
+        assertEq(actual, expected, "charged fee must match controlled movement and total elapsed age");
+        require(vm.revertToState(snapshot), "replay identical observed signal");
+        assertEq(_tradeAfter(key, !buyBase, -int256(1e12), idle), expected,
+            "opposite direction and fee asset must obey the same frozen schedule");
+        require(vm.revertToState(snapshot), "restore signal after opposite-direction charge");
+    }
+
     function _sellBelowOracle(PoolKey memory key, bytes32 id, bool sellBase) private {
         (,,, int24 normalizedTick,,,,) = ILaunchHookOracleV1(address(key.hooks)).oracleState(id);
         assertGt(normalizedTick, 1);
@@ -606,7 +783,25 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
     function _scenarioWithPolicy(uint8 mode, uint256 nonce, uint24 minimum, uint24 hookPips, uint32 sensitivity)
         private returns (Receipts memory received)
     {
+        (LaunchReceiptV1 memory receipt, PreparedMarketV1 memory prepared, PoolKey memory key) =
+            _launchWithPolicy(mode, nonce, minimum, hookPips, sensitivity, true);
+        _trade(key, prepared.identity.currency0 == address(weth), -int256(10 ether));
+        _trade(key, prepared.identity.currency0 == receipt.token, -int256(5 ether));
+        _trade(key, prepared.identity.currency0 == address(weth), int256(1 ether));
+        _trade(key, prepared.identity.currency0 == receipt.token, int256(1 ether));
+        vm.prank(creator);
+        assertTrue(weth.transfer(prepared.identity.hook, 17));
+        _assertHookFeeBacking(manager, key);
+        received = _harvestAndClaim(receipt, prepared, key);
+        assertEq(weth.balanceOf(prepared.identity.hook), 17, "donations must not become fees");
+        received.tradeCount = 4;
+    }
+
+    function _launchWithPolicy(uint8 mode, uint256 nonce, uint24 minimum, uint24 hookPips, uint32 sensitivity, bool openingBuy)
+        private returns (LaunchReceiptV1 memory receipt, PreparedMarketV1 memory prepared, PoolKey memory key)
+    {
         LaunchPlanV1 memory plan = _planWithFees(mode, nonce, developerBps, hookPips);
+        if (!openingBuy) plan.buys = new InitialBuyV1[](0);
         V4MarketConfigV6 memory selected = abi.decode(plan.markets[0].config, (V4MarketConfigV6));
         selected.minimumHookFeePips = minimum;
         selected.feeSensitivityPipsSecondsPerTick = sensitivity;
@@ -618,14 +813,14 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         vm.startPrank(creator);
         core.beginLaunch(plan, LaunchModeV1.Staged);
         core.prepareMarkets(plan, 0, 1);
-        LaunchReceiptV1 memory receipt = core.activateLaunch(plan);
+        receipt = core.activateLaunch(plan);
         vm.stopPrank();
         assertTrue(core.isLaunchActive(receipt.launchId));
         assertEq(uint256(core.readLaunchProgress(receipt.launchId).phase), uint256(LaunchPhaseV1.Active));
         assertEq(receipt.marketCount, 1);
         assertEq(receipt.positionCount, 1);
-        (, PreparedMarketV1 memory prepared) = core.directory().market(receipt.launchId, 0);
-        PoolKey memory key = PoolKey(Currency.wrap(prepared.identity.currency0), Currency.wrap(prepared.identity.currency1), prepared.identity.fee, prepared.identity.tickSpacing, IHooks(prepared.identity.hook));
+        (, prepared) = core.directory().market(receipt.launchId, 0);
+        key = PoolKey(Currency.wrap(prepared.identity.currency0), Currency.wrap(prepared.identity.currency1), prepared.identity.fee, prepared.identity.tickSpacing, IHooks(prepared.identity.hook));
         assertEq(deployer.deployedCodeHash(prepared.identity.hook), prepared.identity.hook.codehash);
         assertEq(keccak256(vm.getCode(vm.envString("HOOK_ARTIFACT"))), deployer.creationCodeHash());
         assertGt(ILaunchHookV1(prepared.identity.hook).openingCompletedAt(prepared.identity.poolId), 0);
@@ -646,16 +841,6 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         _assertHookFeeBacking(manager, key);
         vm.prank(creator);
         assertTrue(IERC20Fork(receipt.token).approve(address(trader), type(uint256).max));
-        _trade(key, prepared.identity.currency0 == address(weth), -int256(10 ether));
-        _trade(key, prepared.identity.currency0 == receipt.token, -int256(5 ether));
-        _trade(key, prepared.identity.currency0 == address(weth), int256(1 ether));
-        _trade(key, prepared.identity.currency0 == receipt.token, int256(1 ether));
-        vm.prank(creator);
-        assertTrue(weth.transfer(prepared.identity.hook, 17));
-        _assertHookFeeBacking(manager, key);
-        received = _harvestAndClaim(receipt, prepared, key);
-        assertEq(weth.balanceOf(prepared.identity.hook), 17, "donations must not become fees");
-        received.tradeCount = 4;
     }
 
     function _planWithFees(uint8 mode, uint256 nonce, uint16 selectedAuthorBps, uint24 hookPips)
@@ -712,7 +897,13 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
     }
 
     function _trade(PoolKey memory key, bool zeroForOne, int256 amount) private returns (uint24) {
-        vm.warp(block.timestamp + 12);
+        return _tradeAfter(key, zeroForOne, amount, 12);
+    }
+
+    function _tradeAfter(PoolKey memory key, bool zeroForOne, int256 amount, uint32 elapsed)
+        private returns (uint24)
+    {
+        vm.warp(block.timestamp + elapsed);
         vm.roll(block.number + 1);
         SwapBalances memory beforeBalances = _snapshotSwapBalances(key, creator);
         SwapParams memory params = SwapParams(zeroForOne, amount, zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);

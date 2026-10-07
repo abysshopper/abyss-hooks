@@ -458,6 +458,258 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         require(vm.revertToState(snapshot), "restore signal after opposite-direction charge");
     }
 
+    function testDenseSecondBySecondBaselineFees() public {
+        _assertDenseResponse(FeePolicy(750, 10_000, 3_000), 0);
+    }
+
+    function testDenseSecondBySecondLowCeilingFees() public {
+        _assertDenseResponse(FeePolicy(750, 1_000, 3_000), 1);
+    }
+
+    function testDenseSecondBySecondDoubleSensitivityFees() public {
+        _assertDenseResponse(FeePolicy(750, 10_000, 6_000), 2);
+    }
+
+    function _assertDenseResponse(FeePolicy memory policy, uint256 nonce) private {
+        vm.skip(!vm.envOr("HOOK_ORACLE_VELOCITY_EXAMPLE", false));
+        for (uint8 mode; mode < 2; ++mode) {
+            if ((vm.envUint("HOOK_FEE_MODE_FLAGS") & (uint256(1) << mode)) == 0) continue;
+            uint256 beforeLaunch = vm.snapshotState();
+            (,, PoolKey memory key) = _launchWithPolicy(
+                mode, 1_800_001 + mode * 100 + nonce, policy.minimum, policy.maximum, policy.sensitivity, false
+            );
+            _settleControlledPool(key);
+            _prepareRise(key, 17, 1);
+            uint256 signal = vm.snapshotState();
+            uint256[] memory ages = new uint256[](314);
+            uint256[] memory rates = new uint256[](314);
+            for (uint256 i; i < 299; ++i) ages[i] = i + 2;
+            uint256 numerator = uint256(policy.sensitivity) * 17;
+            // Probe exact integer-pip transitions, including the first return to the minimum.
+            uint256[3] memory boundaries = [numerator / 100, numerator / 2, numerator];
+            for (uint256 boundary; boundary < boundaries.length; ++boundary) {
+                for (uint256 offset; offset < 5; ++offset) {
+                    ages[299 + boundary * 5 + offset] = boundaries[boundary] - 2 + offset;
+                }
+            }
+            for (uint256 i; i < ages.length; ++i) {
+                uint256 expected = policy.minimum + numerator / ages[i];
+                if (expected > policy.maximum) expected = policy.maximum;
+                rates[i] = _assertReplayedCharge(key, signal, uint32(ages[i] - 1), expected);
+                if (i != 0) assertLe(rates[i], rates[i - 1], "dense idle decay and rounding must be monotonic");
+            }
+            assertEq(rates[rates.length - 3], uint256(policy.minimum) + 1,
+                "at numerator seconds the last one-pip uplift must remain");
+            assertEq(rates[rates.length - 2], policy.minimum,
+                "the very next second must remove the final one-pip uplift");
+            emit log_named_uint("dense fee mode", mode);
+            emit log_named_uint("dense maximum", policy.maximum);
+            emit log_named_uint("dense sensitivity", policy.sensitivity);
+            emit log_named_array("dense total ages seconds", ages);
+            emit log_named_array("dense actual charged pips", rates);
+            require(vm.revertToStateAndDelete(signal), "delete dense signal snapshot");
+            require(vm.revertToStateAndDelete(beforeLaunch), "restore dense policy launch");
+        }
+    }
+
+    function testActualFeeAcrossDustToWholeTokenSwapSizes() public {
+        vm.skip(!vm.envOr("HOOK_ORACLE_VELOCITY_EXAMPLE", false));
+        for (uint8 mode; mode < 2; ++mode) {
+            if ((vm.envUint("HOOK_FEE_MODE_FLAGS") & (uint256(1) << mode)) == 0) continue;
+            uint256 beforeLaunch = vm.snapshotState();
+            (,, PoolKey memory key) = _launchWithPolicy(mode, 1_900_001 + mode, 750, 10_000, 3_000, false);
+            _settleControlledPool(key);
+            _prepareRise(key, 17, 1);
+            _assertSwapSizeMatrix(key);
+            require(vm.revertToStateAndDelete(beforeLaunch), "restore size matrix fee mode");
+        }
+    }
+
+    function _assertSwapSizeMatrix(PoolKey memory key) private {
+        uint32[9] memory ages = [uint32(1), 4, 5, 6, 203, 204, 205, 51_000, 51_001];
+        uint256[6] memory sizes = [uint256(1e6), 1e9, 1e12, 1e15, 1e17, 1 ether];
+        uint256 snapshot = vm.snapshotState();
+        for (uint256 age; age < ages.length; ++age) {
+            uint256 expected = 750 + 51_000 / ages[age];
+            if (expected > 10_000) expected = 10_000;
+            for (uint256 size; size < sizes.length; ++size) {
+                for (uint256 direction; direction < 2; ++direction) {
+                    for (uint256 amountMode; amountMode < 2; ++amountMode) {
+                        int256 amount = amountMode == 0 ? -int256(sizes[size]) : int256(sizes[size]);
+                        assertEq(_tradeAfter(key, direction == 0, amount, ages[age] - 1), expected,
+                            "dust/whole-token, exact-input/output and direction must share the frozen rate");
+                        require(vm.revertToState(snapshot), "replay fee boundary for independent swap size");
+                    }
+                }
+            }
+        }
+        emit log_named_uint("size matrix actual swaps per fee mode", 216);
+        require(vm.revertToStateAndDelete(snapshot), "delete swap size snapshot");
+    }
+
+    function testActualFeeRoundingAtAdjacentRawSwapUnits() public {
+        vm.skip(!vm.envOr("HOOK_ORACLE_VELOCITY_EXAMPLE", false));
+        for (uint8 mode; mode < 2; ++mode) {
+            if ((vm.envUint("HOOK_FEE_MODE_FLAGS") & (uint256(1) << mode)) == 0) continue;
+            uint256 beforeLaunch = vm.snapshotState();
+            (,, PoolKey memory key) = _launchWithPolicy(mode, 2_200_001 + mode, 750, 10_000, 3_000, false);
+            _settleControlledPool(key);
+            _prepareRise(key, 17, 1);
+            _assertRawUnitRounding(key);
+            require(vm.revertToStateAndDelete(beforeLaunch), "restore raw-unit fee mode");
+        }
+    }
+
+    function _assertRawUnitRounding(PoolKey memory key) private {
+        uint32[4] memory ages = [uint32(1), 6, 51_000, 51_001];
+        uint256 snapshot = vm.snapshotState();
+        for (uint256 i; i < ages.length; ++i) {
+            uint256 rate = 750 + 51_000 / ages[i];
+            if (rate > 10_000) rate = 10_000;
+            for (uint256 feeUnits = 1; feeUnits <= 2; ++feeUnits) {
+                uint256 threshold = (feeUnits * 1_000_000 + rate - 1) / rate;
+                for (uint256 offset; offset < 3; ++offset) {
+                    _assertRawAmountCharge(key, snapshot, ages[i], threshold - 1 + offset, rate);
+                }
+            }
+        }
+        require(vm.revertToStateAndDelete(snapshot), "delete raw-unit rounding snapshot");
+    }
+
+    function _assertRawAmountCharge(PoolKey memory key, uint256 snapshot, uint32 age, uint256 quantity, uint256 rate)
+        private
+    {
+        for (uint256 direction; direction < 2; ++direction) {
+            for (uint256 amountMode; amountMode < 2; ++amountMode) {
+                int256 amount = amountMode == 0 ? -int256(quantity) : int256(quantity);
+                SwapParams memory params = SwapParams(direction == 0, amount,
+                    direction == 0 ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
+                TradeFee memory beforeFee = _tradeFeeBefore(key, params);
+                assertEq(_tradeAfter(key, direction == 0, amount, age - 1), rate,
+                    "adjacent raw-unit requests must retain the historical rate");
+                if ((amount < 0) == beforeFee.inputCurrency) {
+                    uint256 charged = ILaunchHookV1(address(key.hooks)).pendingFees(PoolId.unwrap(key.toId()),
+                        beforeFee.asset) - beforeFee.pending;
+                    assertEq(charged, quantity * rate / 1_000_000,
+                        "specified fee-asset amount must cross the exact integer fee-unit threshold");
+                    emit log_named_uint("raw-unit rate", rate);
+                    emit log_named_uint("raw-unit requested quantity", quantity);
+                    emit log_named_uint("raw-unit actual fee units", charged);
+                }
+                require(vm.revertToState(snapshot), "replay adjacent-unit request independently");
+            }
+        }
+    }
+
+    function testContinuousMixedSizeTradesAtGranularCadences() public {
+        vm.skip(!vm.envOr("HOOK_ORACLE_VELOCITY_EXAMPLE", false));
+        for (uint8 mode; mode < 2; ++mode) {
+            if ((vm.envUint("HOOK_FEE_MODE_FLAGS") & (uint256(1) << mode)) == 0) continue;
+            uint256 snapshot = vm.snapshotState();
+            (,, PoolKey memory key) = _launchWithPolicy(mode, 2_000_001 + mode, 750, 10_000, 3_000, false);
+            _settleControlledPool(key);
+            _assertContinuousTrades(key);
+            require(vm.revertToStateAndDelete(snapshot), "restore continuous fee mode");
+        }
+    }
+
+    function testSameBlockAndZeroSecondBlocksPreserveGenuineHistory() public {
+        vm.skip(!vm.envOr("HOOK_ORACLE_VELOCITY_EXAMPLE", false));
+        for (uint8 mode; mode < 2; ++mode) {
+            if ((vm.envUint("HOOK_FEE_MODE_FLAGS") & (uint256(1) << mode)) == 0) continue;
+            uint256 snapshot = vm.snapshotState();
+            (,, PoolKey memory key) = _launchWithPolicy(mode, 2_100_001 + mode, 750, 10_000, 3_000, false);
+            bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+            ILaunchHookOracleV1 oracle = ILaunchHookOracleV1(address(key.hooks));
+            bytes32 id = PoolId.unwrap(key.toId());
+            for (uint256 i; i < 4; ++i) {
+                assertEq(_tradeAfter(key, buyBase, -int256(1 ether), 0), 750,
+                    "new blocks without elapsed seconds must not invent velocity history");
+                (, uint16 cardinality,,,,,,) = oracle.oracleState(id);
+                assertEq(cardinality, 1, "zero-time writes must not fabricate a second observation");
+            }
+            assertEq(_tradeAfter(key, buyBase, -int256(1e12), 1), 750,
+                "the first distinct-time observer still freezes the warm-up minimum");
+            Receipts memory received;
+            received.hook = address(key.hooks);
+            received.poolId = id;
+            for (uint256 i; i < 2; ++i) {
+                assertEq(_sameBlockTradeLeavesOracleUnchanged(received), _referenceRate(key, 0),
+                    "same-block price-moving swaps must retain the frozen historical rate");
+            }
+            uint24 expected = _referenceRate(key, 0);
+            assertEq(_tradeAfter(key, buyBase, -int256(1e12), 0), expected,
+                "a new block at the same timestamp must price existing genuine history");
+            (, uint16 populated,,,,,,) = oracle.oracleState(id);
+            assertEq(populated, 2);
+            expected = _referenceRate(key, 1);
+            assertEq(_tradeAfter(key, buyBase, -int256(1e12), 1), expected,
+                "the next elapsed second must resume genuine sampling");
+            emit log_named_uint("zero-second resumed actual fee", expected);
+            require(vm.revertToStateAndDelete(snapshot), "restore zero-time fee mode");
+        }
+    }
+
+    function _assertContinuousTrades(PoolKey memory key) private {
+        uint256[5] memory sizes = [uint256(1e12), 1e15, 1e17, 1 ether, 5 ether];
+        uint32[8] memory delays = [uint32(1), 1, 2, 1, 3, 5, 1, 7];
+        bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+        uint256[] memory rates = new uint256[](64);
+        uint256 rises;
+        uint256 falls;
+        uint256 quiet;
+        for (uint256 i; i < rates.length; ++i) {
+            uint32 elapsed = delays[i % delays.length];
+            (int256 movement,) = _publicOracleSignal(key, elapsed);
+            if (movement > 0) ++rises;
+            else if (movement < 0) ++falls;
+            else ++quiet;
+            int256 amount = int256(sizes[(i / 2) % sizes.length]);
+            if ((i / 10) % 2 == 0) amount = -amount;
+            uint24 expected = _referenceRate(key, elapsed);
+            rates[i] = _tradeAfter(key, i % 2 == 0 ? buyBase : !buyBase, amount, elapsed);
+            assertEq(rates[i], expected, "continuous trading must price pre-swap history, not its own impact");
+        }
+        assertGt(rises, 0, "mixed live history must include upward signals");
+        assertGt(falls, 0, "mixed live history must include downward signals");
+        assertGt(quiet, 0, "mixed live history must include flat signals");
+        emit log_named_array("continuous actual charged pips", rates);
+        emit log_named_uint("continuous upward signals", rises);
+        emit log_named_uint("continuous downward signals", falls);
+        emit log_named_uint("continuous flat signals", quiet);
+    }
+
+    function _publicOracleSignal(PoolKey memory key, uint32 secondsLater)
+        private view returns (int256 movement, uint32 age)
+    {
+        ILaunchHookOracleV1 oracle = ILaunchHookOracleV1(address(key.hooks));
+        bytes32 id = PoolId.unwrap(key.toId());
+        (uint16 index, uint16 cardinality,, int24 tick,,,,) = oracle.oracleState(id);
+        if (cardinality < 2) return (0, 0);
+        (uint32 latestTime, int56 latestCumulative,,) = oracle.observations(id, index);
+        uint256 previous = (uint256(index) + cardinality - 1) % cardinality;
+        (uint32 previousTime, int56 previousCumulative,,) = oracle.observations(id, previous);
+        uint32 interval;
+        int56 difference;
+        unchecked {
+            interval = latestTime - previousTime;
+            difference = latestCumulative - previousCumulative;
+            age = uint32(block.timestamp + secondsLater) - previousTime;
+        }
+        if (interval == 0) return (0, 0);
+        movement = int256(tick) - int256(difference) / int256(uint256(interval));
+    }
+
+    function _referenceRate(PoolKey memory key, uint32 secondsLater) private view returns (uint24) {
+        PoolBoundLaunchHookBaseV2 hook = PoolBoundLaunchHookBaseV2(address(key.hooks));
+        uint256 minimum = hook.minimumHookFeePips();
+        (int256 movement, uint32 age) = _publicOracleSignal(key, secondsLater);
+        if (movement <= 0 || age == 0) return uint24(minimum);
+        uint256 rate = minimum + uint256(hook.feeSensitivityPipsSecondsPerTick()) * uint256(movement) / age;
+        uint24 maximum = hook.poolConfig(PoolId.unwrap(key.toId())).hookFeePips;
+        return rate > maximum ? maximum : uint24(rate);
+    }
+
     function _sellBelowOracle(PoolKey memory key, bytes32 id, bool sellBase) private {
         (,,, int24 normalizedTick,,,,) = ILaunchHookOracleV1(address(key.hooks)).oracleState(id);
         assertGt(normalizedTick, 1);
@@ -983,7 +1235,9 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         bytes32 id = PoolId.unwrap(key.toId());
         (uint16 index, uint16 cardinality,, int24 tick, uint64 lastBlock,,,) = oracle.oracleState(id);
         assertEq(lastBlock, block.number);
-        assertEq(index, (beforeOracle.index + 1) % cardinality);
+        assertEq(index, uint32(block.timestamp) == beforeOracle.timestamp
+            ? beforeOracle.index : (beforeOracle.index + 1) % cardinality,
+            "only a distinct timestamp may append genuine history");
         assertEq(tick, _expectedOracleTick(beforeOracle, Currency.unwrap(key.currency0) == address(weth)));
         (uint32 timestamp, int56 ticks, uint160 liquidity, bool initialized) = oracle.observations(id, index);
         assertEq(timestamp, uint32(block.timestamp));
@@ -1002,18 +1256,21 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         assertEq(observedLiquidity[0], liquidity);
     }
 
-    function _sameBlockTradeLeavesOracleUnchanged(Receipts memory received) private {
+    function _sameBlockTradeLeavesOracleUnchanged(Receipts memory received) private returns (uint24 rate) {
         PoolKey memory key = ILaunchHookV1(received.hook).poolKey(received.poolId);
         OracleBefore memory beforeOracle = _oracleBeforeSwap(key);
-        bool zeroForOne = Currency.unwrap(key.currency0) == address(weth);
-        SwapParams memory params = SwapParams(zeroForOne, -int256(1 ether),
-            zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
-        TradeFee memory beforeFee = _tradeFeeBefore(key, params);
-        SwapBalances memory balances = _snapshotSwapBalances(key, creator);
-        vm.prank(creator);
-        BalanceDelta delta = trader.trade(key, params);
-        _assertSwapAccounting(manager, key, address(trader), creator, balances, delta);
-        _assertTradeFee(key, params, delta, beforeFee);
+        {
+            bool zeroForOne = Currency.unwrap(key.currency0) == address(weth);
+            SwapParams memory params = SwapParams(zeroForOne, -int256(1 ether),
+                zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
+            TradeFee memory beforeFee = _tradeFeeBefore(key, params);
+            SwapBalances memory balances = _snapshotSwapBalances(key, creator);
+            vm.prank(creator);
+            BalanceDelta delta = trader.trade(key, params);
+            _assertSwapAccounting(manager, key, address(trader), creator, balances, delta);
+            _assertTradeFee(key, params, delta, beforeFee);
+            rate = beforeFee.rate;
+        }
         ILaunchHookOracleV1 oracle = ILaunchHookOracleV1(received.hook);
         (uint16 index,,, int24 tick,,,,) = oracle.oracleState(received.poolId);
         assertEq(index, beforeOracle.index, "same-block swap must not advance the ring");

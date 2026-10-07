@@ -26,6 +26,8 @@ python scripts/check_hooks.py --output evidence/qualification
 
 Pools use zero LP fees. CI deploys fresh actual V6 launch infrastructure on a public-chain fork, launches each example with real WETH, and checks hook-delta accounting and royalty payouts in both currency modes. The dynamic hook's [response matrix](hooks/dynamic-fee/review.md#expanded-response-verification) checks 4,224 actual charged swaps across eight policies, four price rises, three observation intervals, eleven idle durations and both trade directions. Sequential trading also checks oracle-clamp catch-up, return to the minimum and reactivation. Historical deployed V5 infrastructure is not upgraded or relabelled.
 
+Additional [granular regressions](hooks/dynamic-fee/review.md#granular-boundaries-and-trading) execute every second of total signal age from 2 through 300, adjacent-second cap/floor transitions, adjacent raw-unit fee rounding, variable-size exact-input/output swaps, continuous mixed trading and same-timestamp blocks.
+
 CI uses the [dRPC public Robinhood endpoint](https://drpc.org/chainlist/robinhood-mainnet-rpc) because the default public RPC can reject fork reads with a Cloudflare challenge. Local qualification accepts `--rpc-url https://robinhood.drpc.org`; the chain ID, fork block and deployed-code hash checks remain mandatory, and evidence records the selected endpoint.
 
 Maintainers review each submission. Production registry admission requires separate approval.

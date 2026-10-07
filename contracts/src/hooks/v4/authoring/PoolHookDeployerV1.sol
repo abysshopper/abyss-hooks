@@ -5,7 +5,7 @@ import { SSTORE2 } from "solady/utils/SSTORE2.sol";
 import { LibBytes } from "solady/utils/LibBytes.sol";
 import { PoolBoundHookParametersV1 } from "../PoolBoundHookParametersV1.sol";
 import { V4HookFlags } from "../V4HookFlags.sol";
-import { PoolBoundLaunchHookBaseV1 } from "./PoolBoundLaunchHookBaseV1.sol";
+import { PoolBoundLaunchHookBaseV2 } from "./PoolBoundLaunchHookBaseV2.sol";
 
 /// @notice Typed explicit-salt CREATE2 holder for one exact pool-bound creation artifact.
 /// @dev Immutable STOP-prefixed chunks preserve the supplied creationCodeHash forever, with the
@@ -75,7 +75,7 @@ contract PoolHookDeployerV1 {
     /// @dev Existing-address acceptance is the adapter's exact provenance check, not a fallback.
     function deploy(PoolBoundHookParametersV1 calldata parameters, bytes32 salt)
         external
-        returns (PoolBoundLaunchHookBaseV1 hook)
+        returns (PoolBoundLaunchHookBaseV2 hook)
     {
         bytes memory initCode = _initCode(parameters);
         if (!validHookAddress(_predict(salt, keccak256(initCode)))) revert InvalidHookAddress();
@@ -94,7 +94,7 @@ contract PoolHookDeployerV1 {
             revert DeploymentFailed();
         }
         deployedCodeHash[deployed] = deployed.codehash;
-        hook = PoolBoundLaunchHookBaseV1(deployed);
+        hook = PoolBoundLaunchHookBaseV2(deployed);
         emit HookDeployed(
             deployed, salt, parameters.poolManager, parameters.registrar, parameters.oracleFactory
         );

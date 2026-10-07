@@ -26,8 +26,8 @@ class SubmissionBoundaries(unittest.TestCase):
         (self.folder / "Sample.sol").write_text("// SPDX-License-Identifier: MIT\ncontract Sample {}\n")
         (self.folder / "review.md").write_text("Risks disclosed by contributor.\n")
         self.integration = dict(
-            schemaVersion=1, kind="submission", authorId="0x1111111111111111111111111111111111111111",
-            maximumDeveloperFeeBps=0, terms="No developer allocation requested.",
+            schemaVersion=2, kind="submission", authorId="0x1111111111111111111111111111111111111111",
+            developerFeeBps=0, swapFeeModel="static", terms="No developer allocation requested.",
             bounds=dict(minimumTickSpacing=1, maximumTickSpacing=32767, maximumPositions=32,
                         maximumOracleCardinality=4096, feeModeFlags=3),
         )
@@ -99,13 +99,81 @@ class SubmissionBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "canonical example"):
             checks.submissions(self.root)
 
-    def test_invalid_developer_ceilings_rejected(self):
-        for ceiling in (-1, 10000, True, 1.5, "500"):
-            with self.subTest(ceiling=ceiling):
-                self.integration["maximumDeveloperFeeBps"] = ceiling
+    def test_invalid_required_developer_rates_rejected(self):
+        for rate in (-1, 10000, True, 1.5, "500", None):
+            with self.subTest(rate=rate):
+                self.integration["developerFeeBps"] = rate
                 self.save_integration()
-                with self.assertRaisesRegex(ValueError, "maximumDeveloperFeeBps"):
+                with self.assertRaisesRegex(ValueError, "developerFeeBps"):
                     checks.submissions(self.root)
+
+    def test_required_rate_boundaries_and_models_accepted(self):
+        for rate in (0, 9999):
+            for model in ("static", "dynamic"):
+                with self.subTest(rate=rate, model=model):
+                    self.integration.update(developerFeeBps=rate, swapFeeModel=model)
+                    self.save_integration()
+                    self.assertEqual(checks.integration_inputs(self.folder), self.integration)
+
+    def test_invalid_or_old_integration_schema_rejected(self):
+        for version in (0, 1, 3, True, "2", 2.0):
+            with self.subTest(version=version):
+                self.integration["schemaVersion"] = version
+                self.save_integration()
+                with self.assertRaisesRegex(ValueError, "integration schemaVersion"):
+                    checks.submissions(self.root)
+
+    def test_invalid_swap_fee_models_rejected(self):
+        for model in ("STATIC", "Dynamic", "", "other", 0, 1, True, None, [], {}):
+            with self.subTest(model=model):
+                self.integration["swapFeeModel"] = model
+                self.save_integration()
+                with self.assertRaisesRegex(ValueError, "swapFeeModel"):
+                    checks.submissions(self.root)
+
+    def test_missing_author_economics_and_obsolete_ceiling_rejected(self):
+        for field in ("developerFeeBps", "swapFeeModel"):
+            with self.subTest(field=field):
+                original = self.integration.pop(field)
+                self.save_integration()
+                with self.assertRaisesRegex(ValueError, "Exact integration fields"):
+                    checks.submissions(self.root)
+                self.integration[field] = original
+        self.integration["maximumDeveloperFeeBps"] = 500
+        self.save_integration()
+        with self.assertRaisesRegex(ValueError, "Exact integration fields"):
+            checks.submissions(self.root)
+        del self.integration["developerFeeBps"]
+        self.save_integration()
+        with self.assertRaisesRegex(ValueError, "Exact integration fields"):
+            checks.submissions(self.root)
+
+    def test_canonical_reference_accepts_required_rate_but_requires_null_author(self):
+        reference = self.root / "reference-bound"
+        self.folder.rename(reference)
+        self.folder = reference
+        self.integration.update(kind="reference", authorId=None, developerFeeBps=500)
+        self.save_integration()
+        self.assertEqual(checks.integration_inputs(reference)["developerFeeBps"], 500)
+        self.integration["authorId"] = "0x" + "11" * 20
+        self.save_integration()
+        with self.assertRaisesRegex(ValueError, "null authorId"):
+            checks.integration_inputs(reference)
+
+    def test_candidate_environment_uses_exact_declared_rate_and_model(self):
+        for kind in ("reference", "submission"):
+            for rate in (0, 500, 9999):
+                for model, expected in (("static", 0), ("dynamic", 1)):
+                    with self.subTest(kind=kind, rate=rate, model=model):
+                        self.integration.update(kind=kind, developerFeeBps=rate, swapFeeModel=model)
+                        env, values = checks.candidate_environment(
+                            self.integration, Path("candidate.json"), Path("fork.json"), Path("receipts.json"),
+                            {"PATH": "/bin", "HOOK_MAX_DEVELOPER_BPS": "123", "HOOK_SWAP_FEE_MODEL": "123"})
+                        self.assertEqual(values["HOOK_MAX_DEVELOPER_BPS"], rate)
+                        self.assertEqual(values["HOOK_SWAP_FEE_MODEL"], expected)
+                        self.assertEqual(env["HOOK_MAX_DEVELOPER_BPS"], str(rate))
+                        self.assertEqual(env["HOOK_SWAP_FEE_MODEL"], str(expected))
+                        self.assertEqual(env["PATH"], "/bin")
 
     def test_invalid_registry_bounds_rejected(self):
         cases = (("minimumTickSpacing", 0), ("maximumTickSpacing", 32768),
@@ -156,6 +224,8 @@ class SubmissionBoundaries(unittest.TestCase):
             checks.submissions(self.root)
 
     def test_structure_reports_do_not_claim_runtime_qualification(self):
+        self.integration.update(developerFeeBps=500, swapFeeModel="dynamic")
+        self.save_integration()
         output = self.root / "reports"
         rows = checks.submissions(self.root)
         output.mkdir()
@@ -165,6 +235,10 @@ class SubmissionBoundaries(unittest.TestCase):
         self.assertFalse(report["runtimeQualification"]["passed"])
         self.assertEqual(report["runtimeQualification"]["status"], "not-run")
         self.assertEqual(report["derivedRegistryFields"]["topology"], 2)
+        self.assertEqual(report["declared"]["developerFeeBps"], 500)
+        self.assertEqual(report["declared"]["swapFeeModel"], "dynamic")
+        self.assertNotIn("maximumDeveloperFeeBps", report["declared"])
+        self.assertEqual(report["derivedRegistryFields"]["maximumDeveloperFeeBps"], 500)
         self.assertEqual(report["sourceFileSha256"]["Sample.sol"],
                          hashlib.sha256((self.folder / "Sample.sol").read_bytes()).hexdigest())
 
@@ -297,21 +371,23 @@ class ReceiptEvidenceBoundaries(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "receipt.json"
         self.manifest = {"addresses": {"wrappedNative": "0x" + "11" * 20}}
+        self.declared = {"developerFeeBps": 500, "swapFeeModel": "static"}
         self.receipt = {
             "schema": "abyss-hooks.launch-receipts.v1", "token": "0x" + "22" * 20,
             "poolId": "0x" + "33" * 32, "hook": "0x" + "44" * 20,
             "quoteAsset": self.manifest["addresses"]["wrappedNative"], "treasuryPaid": "10",
             "ownerPaid": "190", "authorPaid": "10", "hookFeesCollected": "200", "lpFeesCollected": "20",
-            "tradeCount": 2, "developerFeeBps": 500, "expectedAuthorPaid": "10", "expectedOwnerPaid": "190",
+            "tradeCount": 2, "developerFeeBps": 500, "authorFeeBps": 500, "swapFeeModel": 0,
+            "expectedAuthorPaid": "10", "expectedOwnerPaid": "190",
         }
 
     def parse(self):
         self.path.write_text(json.dumps(self.receipt))
-        return checks.receipt_evidence(self.path, self.manifest, 500)
+        return checks.receipt_evidence(self.path, self.manifest, self.declared)
 
     def test_missing_file_never_qualifies(self):
         with self.assertRaisesRegex(ValueError, "Missing real launch"):
-            checks.receipt_evidence(self.path, self.manifest, 500)
+            checks.receipt_evidence(self.path, self.manifest, self.declared)
 
     def test_canonical_uint256_strings_preserve_receipt_precision(self):
         amount = str(1 << 255)
@@ -327,6 +403,54 @@ class ReceiptEvidenceBoundaries(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.parse()
                 self.receipt[name] = original
+
+    def test_paid_and_runtime_author_rates_must_each_equal_declaration(self):
+        for field in ("developerFeeBps", "authorFeeBps"):
+            for rate in (0, 499, 501, 9999):
+                with self.subTest(field=field, rate=rate):
+                    original = self.receipt[field]
+                    self.receipt[field] = rate
+                    with self.assertRaisesRegex(ValueError, field):
+                        self.parse()
+                    self.receipt[field] = original
+
+    def test_runtime_model_must_match_declaration(self):
+        for model, expected in (("static", 0), ("dynamic", 1)):
+            self.declared["swapFeeModel"] = model
+            self.receipt["swapFeeModel"] = expected
+            self.assertEqual(self.parse()["swapFeeModel"], expected)
+            for actual in (1 - expected, 2):
+                with self.subTest(model=model, actual=actual):
+                    self.receipt["swapFeeModel"] = actual
+                    with self.assertRaisesRegex(ValueError, "swapFeeModel"):
+                        self.parse()
+
+    def test_missing_runtime_terms_or_model_rejected(self):
+        for field in ("authorFeeBps", "swapFeeModel"):
+            with self.subTest(field=field):
+                original = self.receipt.pop(field)
+                with self.assertRaisesRegex(ValueError, f"Missing receipt field: {field}"):
+                    self.parse()
+                self.receipt[field] = original
+
+    def test_zero_required_author_rate_does_not_invent_payment(self):
+        self.declared["developerFeeBps"] = 0
+        self.receipt.update(developerFeeBps=0, authorFeeBps=0, authorPaid="0",
+                            expectedAuthorPaid="0", ownerPaid="200", expectedOwnerPaid="200")
+        self.assertEqual(self.parse()["developerFeeBps"], 0)
+        self.receipt["developerFeeBps"] = 500
+        with self.assertRaisesRegex(ValueError, "required author rate"):
+            self.parse()
+
+    def test_runtime_terms_and_model_are_canonical_unsigned_integers(self):
+        for field in ("authorFeeBps", "swapFeeModel"):
+            for value in ("01", "-1", "static", True, 1.5, 1 << 256):
+                with self.subTest(field=field, value=value):
+                    original = self.receipt[field]
+                    self.receipt[field] = value
+                    with self.assertRaisesRegex(ValueError, "canonical uint256"):
+                        self.parse()
+                    self.receipt[field] = original
 
     def test_noncanonical_receipt_integers_rejected(self):
         for value in ("01", "-1", "1.0", True, 1.5, 1 << 256):

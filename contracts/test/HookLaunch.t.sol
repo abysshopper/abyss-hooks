@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { Test } from "forge-std/Test.sol";
+import { LaunchDeltaAccountingFixture } from "./LaunchDeltaAccountingFixture.sol";
 import { IPoolManager } from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import { IHooks } from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
-import { PoolIdLibrary } from "@uniswap/v4-core/src/types/PoolId.sol";
+import { PoolId, PoolIdLibrary } from "@uniswap/v4-core/src/types/PoolId.sol";
 import { Currency } from "@uniswap/v4-core/src/types/Currency.sol";
 import { SwapParams } from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import { BalanceDelta, BalanceDeltaLibrary } from "@uniswap/v4-core/src/types/BalanceDelta.sol";
@@ -17,6 +17,7 @@ import { IAbyssLaunchFactory } from "../src/interfaces/IAbyssLaunch.sol";
 import { LaunchOrchestratorV1, LaunchImplementationRegistryV2, PoolMarketAdapterV1, PoolFeeCollectorFactoryV1, V4FeeCollectorV2 } from "../src/interfaces/IForkLaunch.sol";
 import { PoolHookDeployerV1 } from "../src/hooks/v4/authoring/PoolHookDeployerV1.sol";
 import { ILaunchHookV1 } from "../src/hooks/v4/authoring/ILaunchHookV1.sol";
+import { ILaunchHookAuthorTerms } from "../src/hooks/v4/authoring/ILaunchHookAuthorTerms.sol";
 import { PoolBoundHookParametersV1 } from "../src/hooks/v4/PoolBoundHookParametersV1.sol";
 import { V4FeeLiquidityLockerV2 } from "../src/launch/fees/v2/V4FeeLiquidityLockerV2.sol";
 import { FeeAssetPolicyV2 } from "../src/launch/fees/v2/ILaunchFeeHubV2.sol";
@@ -33,7 +34,11 @@ interface IOracleAdminFork {
     function registerOracleConfig(OracleConfig calldata config) external returns (bytes32);
 }
 
-contract HookLaunchTest is Test {
+interface IHookFeeRatePreviewFork {
+    function feeRate(SwapParams calldata params) external view returns (uint24);
+}
+
+contract HookLaunchTest is LaunchDeltaAccountingFixture {
     using BalanceDeltaLibrary for BalanceDelta;
     using PoolIdLibrary for PoolKey;
 
@@ -117,6 +122,39 @@ contract HookLaunchTest is Test {
         assertGt(scenarios, 0);
     }
 
+    function testLaunchRejectsReducedAuthorPayment() public {
+        vm.skip(developerBps == 0);
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        LaunchPlanV1 memory plan = _planWithFees(mode, 200_001, developerBps - 1, 0);
+        vm.startPrank(creator);
+        bytes32 launchId = core.beginLaunch(plan, LaunchModeV1.Staged).launchId;
+        core.prepareMarkets(plan, 0, 1);
+        vm.expectRevert();
+        core.activateLaunch(plan);
+        vm.stopPrank();
+        assertFalse(core.isLaunchActive(launchId));
+        (, PreparedMarketV1 memory prepared) = core.directory().market(launchId, 0);
+        assertEq(StateLibrary.getLiquidity(manager, PoolIdLibrary.toId(PoolKey(
+            Currency.wrap(prepared.identity.currency0), Currency.wrap(prepared.identity.currency1),
+            prepared.identity.fee, prepared.identity.tickSpacing, IHooks(prepared.identity.hook)
+        ))), 0, "mismatched payment must not acquire liquidity");
+    }
+
+    function testOrdinaryUIFeesPayAuthorFromLPProceeds() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        address payout = makeAddr("registered author payout");
+        vm.prank(author);
+        registry.setAuthorPayout(author, payout);
+        Receipts memory received = _scenarioWithFees(mode, 300_001, 0);
+        assertEq(received.hookFeesCollected, 0);
+        assertEq(received.treasuryPaid, 0);
+        assertGt(received.lpFeesCollected, 0);
+        assertEq(received.authorPaid, received.expectedAuthorPaid);
+        assertEq(received.ownerPaid, received.expectedOwnerPaid);
+        assertEq(weth.balanceOf(payout), received.authorPaid);
+        assertEq(weth.balanceOf(author), 0, "stable identity is not the payout destination");
+    }
+
     function _admitCandidate() private {
         bytes memory creation = vm.getCode(vm.envString("HOOK_ARTIFACT"));
         deployer = new PoolHookDeployerV1(creation);
@@ -170,7 +208,13 @@ contract HookLaunchTest is Test {
     }
 
     function _scenario(uint8 mode, uint256 nonce) private returns (Receipts memory received) {
-        LaunchPlanV1 memory plan = _plan(mode, nonce);
+        return _scenarioWithFees(mode, nonce, 10_000);
+    }
+
+    function _scenarioWithFees(uint8 mode, uint256 nonce, uint24 hookPips)
+        private returns (Receipts memory received)
+    {
+        LaunchPlanV1 memory plan = _planWithFees(mode, nonce, developerBps, hookPips);
         vm.startPrank(creator);
         core.beginLaunch(plan, LaunchModeV1.Staged);
         core.prepareMarkets(plan, 0, 1);
@@ -185,17 +229,31 @@ contract HookLaunchTest is Test {
         assertEq(deployer.deployedCodeHash(prepared.identity.hook), prepared.identity.hook.codehash);
         assertEq(keccak256(vm.getCode(vm.envString("HOOK_ARTIFACT"))), deployer.creationCodeHash());
         assertGt(ILaunchHookV1(prepared.identity.hook).openingCompletedAt(prepared.identity.poolId), 0);
+        ILaunchHookAuthorTerms terms = ILaunchHookAuthorTerms(prepared.identity.hook);
+        assertEq(terms.authorFeeBps(), developerBps);
+        assertEq(uint256(terms.swapFeeModel()), vm.envUint("HOOK_SWAP_FEE_MODEL"));
+        assertEq(ILaunchFeeHubV3(receipt.feeHub).sourceTerms(prepared.feeSource).beneficiary, author);
+        assertEq(ILaunchFeeHubV3(receipt.feeHub).sourceTerms(prepared.feeSource).developerFeeBps, developerBps);
+        assertEq(key.fee, 3_000, "LP fee must preserve launch settings");
+        assertEq(ILaunchHookV1(prepared.identity.hook).poolConfig(prepared.identity.poolId).hookFeePips, hookPips);
+        _assertHookFeeBacking(manager, key);
         vm.prank(creator);
         assertTrue(IERC20Fork(receipt.token).approve(address(trader), type(uint256).max));
         _trade(key, prepared.identity.currency0 == address(weth), -int256(10 ether));
         _trade(key, prepared.identity.currency0 == receipt.token, -int256(5 ether));
         _trade(key, prepared.identity.currency0 == address(weth), int256(1 ether));
         _trade(key, prepared.identity.currency0 == receipt.token, int256(1 ether));
+        vm.prank(creator);
+        assertTrue(weth.transfer(prepared.identity.hook, 17));
+        _assertHookFeeBacking(manager, key);
         received = _harvestAndClaim(receipt, prepared, key);
+        assertEq(weth.balanceOf(prepared.identity.hook), 17, "donations must not become fees");
         received.tradeCount = 4;
     }
 
-    function _plan(uint8 mode, uint256 nonce) private view returns (LaunchPlanV1 memory plan) {
+    function _planWithFees(uint8 mode, uint256 nonce, uint16 selectedAuthorBps, uint24 hookPips)
+        private view returns (LaunchPlanV1 memory plan)
+    {
         plan.chainId = block.chainid;
         plan.orchestrator = address(core);
         plan.creator = creator;
@@ -209,7 +267,7 @@ contract HookLaunchTest is Test {
         config.lpFeePips = 3_000;
         config.tickSpacing = envelope.bounds.minimumTickSpacing;
         config.sqrtPriceX96 = uint160(1 << 96);
-        config.hookFeePips = 10_000;
+        config.hookFeePips = hookPips;
         config.feeMode = mode;
         config.protocolFeeDenominator = envelope.protocolFeeDenominator;
         config.treasury = envelope.protocolTreasury;
@@ -218,7 +276,7 @@ contract HookLaunchTest is Test {
         config.profileId = profileId;
         config.termsDigest = envelope.termsDigest;
         config.developerBeneficiary = author;
-        config.developerFeeBps = developerBps;
+        config.developerFeeBps = selectedAuthorBps;
         config.positions = new V4PositionConfigV1[](1);
         int24 edge = (TickMath.MAX_TICK / config.tickSpacing) * config.tickSpacing;
         config.positions[0] = V4PositionConfigV1(token < address(weth) ? int24(0) : -edge, token < address(weth) ? edge : int24(0), 1_000 ether, bytes32(uint256(1)), 1_000 ether);
@@ -241,14 +299,63 @@ contract HookLaunchTest is Test {
     function _trade(PoolKey memory key, bool zeroForOne, int256 amount) private {
         vm.warp(block.timestamp + 12);
         vm.roll(block.number + 1);
+        SwapBalances memory beforeBalances = _snapshotSwapBalances(key, creator);
+        SwapParams memory params = SwapParams(zeroForOne, amount, zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
+        TradeFee memory fee = _tradeFeeBefore(key, params);
         vm.prank(creator);
-        BalanceDelta delta = trader.trade(key, SwapParams(zeroForOne, amount, zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1));
+        BalanceDelta delta = trader.trade(key, params);
+        _assertSwapAccounting(manager, key, address(trader), creator, beforeBalances, delta);
+        _assertTradeFee(key, params, delta, fee);
         int128 input = zeroForOne ? delta.amount0() : delta.amount1();
         int128 output = zeroForOne ? delta.amount1() : delta.amount0();
         assertLt(input, 0);
         assertGt(output, 0);
         if (amount < 0) assertEq(int256(input), amount);
         else assertEq(int256(output), amount);
+    }
+
+    struct TradeFee {
+        address asset;
+        uint256 pending;
+        uint24 rate;
+        bool inputCurrency;
+    }
+
+    function _tradeFeeBefore(PoolKey memory key, SwapParams memory params)
+        private view returns (TradeFee memory fee)
+    {
+        ILaunchHookV1 hook = ILaunchHookV1(address(key.hooks));
+        ILaunchHookV1.PoolConfig memory config = hook.poolConfig(PoolId.unwrap(key.toId()));
+        address input = Currency.unwrap(params.zeroForOne ? key.currency0 : key.currency1);
+        fee.inputCurrency = config.feeMode == ILaunchHookV1.FeeMode.InputToken
+            || input == Currency.unwrap(config.quoteCurrency);
+        fee.asset = config.feeMode == ILaunchHookV1.FeeMode.InputToken
+            ? input : Currency.unwrap(config.quoteCurrency);
+        fee.pending = hook.pendingFees(PoolId.unwrap(key.toId()), fee.asset);
+        fee.rate = IHookFeeRatePreviewFork(address(key.hooks)).feeRate(params);
+        assertLe(fee.rate, config.hookFeePips);
+        if (ILaunchHookAuthorTerms(address(key.hooks)).swapFeeModel() == ILaunchHookAuthorTerms.SwapFeeModel.Static) {
+            assertEq(fee.rate, config.hookFeePips);
+        }
+    }
+
+    function _assertTradeFee(PoolKey memory key, SwapParams memory params, BalanceDelta delta, TradeFee memory beforeFee)
+        private view
+    {
+        uint256 charged = ILaunchHookV1(address(key.hooks)).pendingFees(PoolId.unwrap(key.toId()), beforeFee.asset)
+            - beforeFee.pending;
+        bool specifiedCurrency = (params.amountSpecified < 0) == beforeFee.inputCurrency;
+        uint256 basis;
+        if (specifiedCurrency) {
+            basis = uint256(params.amountSpecified < 0 ? -params.amountSpecified : params.amountSpecified);
+        } else if (beforeFee.inputCurrency) {
+            int128 input = params.zeroForOne ? delta.amount0() : delta.amount1();
+            basis = uint256(-int256(input)) - charged;
+        } else {
+            int128 output = params.zeroForOne ? delta.amount1() : delta.amount0();
+            basis = uint256(uint128(output)) + charged;
+        }
+        assertEq(charged, FullMath.mulDiv(basis, beforeFee.rate, 1_000_000), "swap must charge the previewed frozen hook rate");
     }
 
     struct FeePreview {
@@ -281,12 +388,13 @@ contract HookLaunchTest is Test {
         assertEq(hub.claimableDeveloperFees(author, fee.asset), expectedAuthor);
         assertEq(hub.claimableOwnerFees(creator, fee.asset), expectedOwner);
         uint256 ownerBefore = asset.balanceOf(creator);
-        uint256 authorBefore = asset.balanceOf(author);
+        address payout = registry.authorPayout(author);
+        uint256 authorBefore = asset.balanceOf(payout);
         vm.prank(executor);
         assertEq(hub.claimDeveloperFees(author, fee.asset), expectedAuthor);
         vm.prank(creator);
         assertEq(hub.claimOwnerFees(fee.asset, creator), expectedOwner);
-        authorPaid = asset.balanceOf(author) - authorBefore;
+        authorPaid = asset.balanceOf(payout) - authorBefore;
         ownerPaid = asset.balanceOf(creator) - ownerBefore;
         assertEq(authorPaid, expectedAuthor);
         assertEq(ownerPaid, expectedOwner);
@@ -333,6 +441,7 @@ contract HookLaunchTest is Test {
         }
         assertTrue(locker.isSealed(prepared.identity.poolId));
         assertEq(_liquidity(key, receipt.token), principal);
+        _assertHookFeeBacking(manager, key);
     }
 
     function _deployPublic(string memory name, bytes memory arguments) private returns (address target) {
@@ -378,6 +487,9 @@ contract HookLaunchTest is Test {
         vm.serializeUint(object, "hookFeesCollected", received.hookFeesCollected);
         vm.serializeUint(object, "lpFeesCollected", received.lpFeesCollected);
         vm.serializeUint(object, "developerFeeBps", developerBps);
+        ILaunchHookAuthorTerms terms = ILaunchHookAuthorTerms(received.hook);
+        vm.serializeUint(object, "authorFeeBps", terms.authorFeeBps());
+        vm.serializeUint(object, "swapFeeModel", uint256(terms.swapFeeModel()));
         string memory json = vm.serializeUint(object, "tradeCount", received.tradeCount);
         vm.writeJson(json, vm.envString("HOOK_RECEIPT_EVIDENCE"));
     }

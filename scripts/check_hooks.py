@@ -27,7 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FIELDS = {"schemaVersion", "name", "topology", "source", "contract", "license"}
 SLUG = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-INTEGRATION_FIELDS = {"schemaVersion", "kind", "authorId", "maximumDeveloperFeeBps", "terms", "bounds"}
+INTEGRATION_FIELDS = {"schemaVersion", "kind", "authorId", "developerFeeBps", "swapFeeModel", "terms", "bounds"}
+SWAP_FEE_MODELS = {"static": 0, "dynamic": 1}
 FORK_MANIFEST = ROOT / "contracts/config/robinhood.json"
 HARNESS = "contracts/test/HookLaunch.t.sol"
 
@@ -50,16 +51,18 @@ def integration_inputs(folder):
     require(path.is_file(), f"Missing integration.json: {folder}")
     data = json.loads(path.read_text(), object_pairs_hook=unique_object)
     require(isinstance(data, dict) and set(data) == INTEGRATION_FIELDS, "Exact integration fields required")
-    require(type(data["schemaVersion"]) is int and data["schemaVersion"] == 1, "Unsupported integration schemaVersion")
+    require(type(data["schemaVersion"]) is int and data["schemaVersion"] == 2, "Unsupported integration schemaVersion")
     require(data["kind"] in ("reference", "submission"), "Unsupported integration kind")
     author = data["authorId"]
     if data["kind"] == "reference":
         require(folder.name == "reference-bound", "Only canonical example folders may declare reference kind")
-        require(author is None and data["maximumDeveloperFeeBps"] == 0, "Reference examples cannot propose author economics")
+        require(author is None, "Reference examples must declare null authorId")
     else:
         require(isinstance(author, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", author) and int(author, 16) != 0, "authorId must be a nonzero 20-byte address")
-    ceiling = data["maximumDeveloperFeeBps"]
-    require(type(ceiling) is int and 0 <= ceiling < 10000, "maximumDeveloperFeeBps must be an integer in 0..9999")
+    rate = data["developerFeeBps"]
+    require(type(rate) is int and 0 <= rate < 10000, "developerFeeBps must be an integer in 0..9999")
+    require(isinstance(data["swapFeeModel"], str) and data["swapFeeModel"] in SWAP_FEE_MODELS,
+            "swapFeeModel must be static or dynamic")
     require(isinstance(data["terms"], str) and data["terms"].strip(), "Nonempty author terms are required")
     codec.bounds_tuple(data["bounds"])
     return data
@@ -83,6 +86,7 @@ def write_review_reports(rows, output):
                 "economicVersion": 3, "capabilities": 123, "flags": 0,
                 "callbackFlags": 0x1afc, "callbackMask": 0x3fff,
                 "configSchema": "0x" + codec.config_schema(5).hex(),
+                "maximumDeveloperFeeBps": declared["developerFeeBps"],
                 "configBoundsDigest": "0x" + codec.config_bounds_digest(declared["bounds"]).hex(),
             },
             "runtimeQualification": {"passed": False, "status": "not-run", "fixtureOnly": True},
@@ -90,7 +94,7 @@ def write_review_reports(rows, output):
             "admissionReady": False,
             "pendingAdmission": [
                 "Complete source/runtime/dependency review and approved artifactDigest/reviewManifestDigest/termsDigest",
-                "Approve declared bounds and ceiling against the target registry's immutable protocol maximum",
+                "Approve declared bounds and required author rate against the target registry's immutable protocol maximum",
                 "Target chain, registry and core; registered adapterId and dependencyDigest",
                 "Fixed protocol treasury and denominator (zero or 4..10)",
                 "Deployed graph addresses/runtime hashes, immutable typed deployer/chunks and bound constructor provenance",
@@ -105,7 +109,9 @@ def write_review_reports(rows, output):
     for report in reports:
         data = report["declared"]
         lines.extend([f"## {report['name']}", "", f"- Kind: `{data['kind']}`; topology: `{report['sourceIdentity']['topology']}`",
-                      f"- Stable authorId: `{data['authorId']}`; proposed ceiling: `{data['maximumDeveloperFeeBps']}` bps",
+                      f"- Stable authorId: `{data['authorId']}`; required author allocation: `{data['developerFeeBps']}` bps",
+                      f"- Swap fee model: `{data['swapFeeModel']}`; derived registry maximumDeveloperFeeBps: `{data['developerFeeBps']}`",
+                      "- The author rate allocates owner fees after bounty through the existing V3 hub; creator LP and hook swap fees are separate settings.",
                       f"- Bounds: `{json.dumps(data['bounds'], sort_keys=True)}`",
                       f"- Exact terms, file pins and pending inputs: `{report['name']}.registration-inputs.json`", ""])
     (output / "PR-REVIEW.md").write_text("\n".join(lines) + "\n")
@@ -197,7 +203,7 @@ def check_fork_graph(manifest, rpc, output, env):
     save_json(output / "fork-code-evidence.json", evidence)
 
 
-def receipt_evidence(path, manifest, maximum):
+def receipt_evidence(path, manifest, declared):
     require(path.is_file() and not path.is_symlink(), "Missing real launch receipt evidence after forge test")
     receipt = json.loads(path.read_text(), object_pairs_hook=unique_object)
     require(receipt["schema"] == "abyss-hooks.launch-receipts.v1", "Wrong launch receipt schema")
@@ -208,10 +214,14 @@ def receipt_evidence(path, manifest, maximum):
             "Invalid receipt poolId")
     require(receipt["quoteAsset"].lower() == manifest["addresses"]["wrappedNative"].lower(), "Receipt quote differs from pinned WETH")
     for name in ("treasuryPaid", "ownerPaid", "authorPaid", "hookFeesCollected", "lpFeesCollected",
-                 "tradeCount", "developerFeeBps", "expectedAuthorPaid", "expectedOwnerPaid"):
+                 "tradeCount", "developerFeeBps", "authorFeeBps", "swapFeeModel", "expectedAuthorPaid", "expectedOwnerPaid"):
+        require(name in receipt, f"Missing receipt field: {name}")
         receipt[name] = canonical_integer(receipt[name], name)
     require(receipt["tradeCount"] >= 2, "Receipt requires actual trades in both directions")
-    require(receipt["developerFeeBps"] <= maximum, "Receipt exceeds candidate developer ceiling")
+    require(receipt["developerFeeBps"] == declared["developerFeeBps"], "Receipt developerFeeBps differs from required author rate")
+    require(receipt["authorFeeBps"] == declared["developerFeeBps"], "Receipt authorFeeBps differs from author declaration")
+    require(receipt["swapFeeModel"] == SWAP_FEE_MODELS[declared["swapFeeModel"]],
+            "Receipt swapFeeModel differs from author declaration")
     require(receipt["authorPaid"] == receipt["expectedAuthorPaid"] and receipt["ownerPaid"] == receipt["expectedOwnerPaid"],
             "Receipt author/owner accounting mismatch")
     return receipt
@@ -221,7 +231,8 @@ def candidate_environment(declared, selected, manifest, receipts, environment):
     env = dict(environment)
     values = {
         "HOOK_ARTIFACT": str(selected), "HOOK_TOPOLOGY": 2,
-        "HOOK_MAX_DEVELOPER_BPS": 500 if declared["kind"] == "reference" else declared["maximumDeveloperFeeBps"],
+        "HOOK_MAX_DEVELOPER_BPS": declared["developerFeeBps"],
+        "HOOK_SWAP_FEE_MODEL": SWAP_FEE_MODELS[declared["swapFeeModel"]],
         "HOOK_FORK_MANIFEST": str(manifest), "HOOK_RECEIPT_EVIDENCE": str(receipts),
     }
     for field, name in (
@@ -321,7 +332,7 @@ def qualify(output, rows, *, rpc_url=None):
             require(hashlib.sha256(selected.read_bytes()).hexdigest() == measured["fileSha256"], "Selected artifact changed during execution")
             require(hashlib.sha256(manifest_path.read_bytes()).hexdigest() == manifest_hash, "Fork manifest changed during execution")
             require(hashlib.sha256(candidate_manifest.read_bytes()).hexdigest() == manifest_hash, "Candidate fork manifest changed during execution")
-            evidence = receipt_evidence(receipts, manifest, inputs["HOOK_MAX_DEVELOPER_BPS"])
+            evidence = receipt_evidence(receipts, manifest, report["declared"])
             result.update(locallyQualified=True, receiptEvidence=evidence,
                           receiptEvidenceFileSha256=hashlib.sha256(receipts.read_bytes()).hexdigest())
             report["runtimeQualification"] = {

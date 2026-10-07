@@ -112,7 +112,7 @@ library TruncatedOracle {
     function observe(
         Observation[65_535] storage self,
         uint32 time,
-        uint32[] memory secondsAgos,
+        uint32[] calldata secondsAgos,
         int24 tick,
         uint16 index,
         uint128 liquidity,

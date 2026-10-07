@@ -10,7 +10,7 @@ import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
 import { ModifyLiquidityParams, SwapParams } from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import { IAbyssLaunchFactory } from "../../../interfaces/IAbyssLaunch.sol";
 
-/// @notice Full-key collection, binding and real-oracle contract for author-submitted launch hooks.
+/// @notice Full-key collection and binding contract for author-submitted launch hooks.
 /// @dev The wire tuple and legacy-required getters match the canonical V2 collector/locker.
 ///      ABI conformance, inheritance and permission flags do not prove arbitrary runtime safety.
 ///      Admission must review the entire concrete runtime, creation artifact and dependency graph.
@@ -32,20 +32,7 @@ interface ILaunchHookV1 is IUnlockCallback {
         bytes32 oracleConfigId;
     }
 
-    /// @dev Capacity is not populated history; initializedAt is the genuine oracle genesis.
-    struct OracleState {
-        uint16 index;
-        uint16 cardinality;
-        uint16 cardinalityNext;
-        int24 tick;
-        uint64 lastBlock;
-        uint64 initializedAt;
-        int24 maxAbsTickMove;
-        uint16 cardinalityCap;
-    }
-
     function PIPS_DENOMINATOR() external view returns (uint24);
-    function MAX_ORACLE_CARDINALITY() external view returns (uint16);
     function REQUIRED_HOOK_FLAGS() external view returns (uint160);
     function ALL_HOOK_MASK() external view returns (uint160);
     function poolManager() external view returns (IPoolManager);
@@ -61,32 +48,6 @@ interface ILaunchHookV1 is IUnlockCallback {
     function settledFees(bytes32 id, address asset) external view returns (uint256);
     function aggregateLiabilities(address asset) external view returns (uint256);
     function aggregateManagerClaims(address asset) external view returns (uint256);
-    function oracleState(bytes32 id)
-        external
-        view
-        returns (
-            uint16 index,
-            uint16 cardinality,
-            uint16 cardinalityNext,
-            int24 tick,
-            uint64 lastBlock,
-            uint64 initializedAt,
-            int24 maxAbsTickMove,
-            uint16 cardinalityCap
-        );
-    function observations(bytes32 id, uint256 index)
-        external
-        view
-        returns (
-            uint32 blockTimestamp,
-            int56 tickCumulative,
-            uint160 secondsPerLiquidityCumulativeX128,
-            bool observationInitialized
-        );
-    function validateOracleConfig(bytes32 oracleConfigId)
-        external
-        view
-        returns (uint24 maxAbsTickMove, uint16 cardinality);
     function registerPool(PoolKey calldata key, PoolConfig calldata config) external;
     function completePoolOpening(PoolKey calldata key) external;
     function openingCompletedAt(bytes32 id) external view returns (uint256);
@@ -96,14 +57,7 @@ interface ILaunchHookV1 is IUnlockCallback {
     function collectFees(PoolKey calldata key)
         external
         returns (uint256 amount0, uint256 amount1);
-    function observeTruncated(bytes32 id, uint32[] calldata secondsAgos)
-        external
-        view
-        returns (
-            int56[] memory tickCumulatives,
-            uint160[] memory secondsPerLiquidityCumulativeX128s
-        );
-    function increaseObservationCardinalityNext(bytes32 id, uint16 requested) external;
+    /// @notice Genuine oracle genesis timestamp, or zero when no oracle is composed.
     function oracleInitializedAt(bytes32 id) external view returns (uint256);
 
     function afterInitialize(address sender, PoolKey calldata key, uint160 sqrtPriceX96, int24 tick)

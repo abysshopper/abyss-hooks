@@ -37,17 +37,17 @@ Missing, extra or duplicate fields and incorrect numeric types are rejected. The
 
 ### Hook requirements
 
-- Derive from `PoolBoundLaunchHookBaseV2`; preserve its typed constructor. The base works without a fee-calculation override.
+- Derive from `PoolBoundLaunchHookBaseV2`; preserve its typed constructor. The base works without a fee-calculation override and contains no oracle history. Inherit the optional `PoolBoundTruncatedOracleV2` template when your hook needs that feature.
 - Override `authorFeeBps()` to declare your required payment rate; its default is zero. Match it in `integration.json`. Do not supply a payout address.
 - Pool LP fees must be zero. Static is the default: charge the creator's configured trading fee through hook deltas. Only explicitly dynamic hooks override `swapFeeModel()` and `_calculateRate(LaunchHookFeeContextV2 memory)`.
 - Dynamic rates must not exceed the configured hook-fee maximum. The base freezes one rate before each swap and applies full-precision `floor(amount * rate / 1_000_000)` charges, bounded by `int128.max`. Disclose the formula, rounding and potential reverts.
 - Preserve manager-only callbacks, mask `0x1afc` under `0x3fff`, one-time registrar binding and exact full-key checks.
 - Preserve permanent liquidity custody, fee-only accounting, backing, settlement and collector-only collection. Donations are not fees.
 - Preserve treasury arithmetic: `denominator == 0 ? 0 : (grossHookFee / denominator) * 125 / 100`; nonzero denominators are `4..10`.
-- Preserve genuine oracle history and pre-genesis rejection. Capacity does not establish mature lookback.
+- If composing the oracle, preserve genuine history and pre-genesis rejection. Capacity does not establish mature lookback.
 - Keep developer payments in the downstream fee hub. No hook-level author payment, sweep, upgrade or recipient-selection extension.
 
-The [base](contracts/src/hooks/v4/authoring/PoolBoundLaunchHookBaseV2.sol) and [typed deployer](contracts/src/hooks/v4/authoring/PoolHookDeployerV1.sol) define the authoring contract. `scripts/upstream.json` records source provenance; no private repository checkout is needed. The base creates a fixed validation helper; its code is part of the reviewed dependency graph.
+The [base](contracts/src/hooks/v4/authoring/PoolBoundLaunchHookBaseV2.sol) and [typed deployer](contracts/src/hooks/v4/authoring/PoolHookDeployerV1.sol) define the authoring contract. `scripts/upstream.json` records source provenance; no private repository checkout is needed. Submit one concrete hook contract. Inherited abstract templates and internal library code compile into that hook; the base performs validation itself and does not deploy a helper. Do not modify the approved base or deploy custom companion contracts.
 
 ### Fees and author payment
 
@@ -71,11 +71,41 @@ For a dynamic hook, explicitly return `SwapFeeModel.Dynamic` from `swapFeeModel(
 
 ### Provided accounting
 
-The base supplies lifecycle checks, oracle history, permanent LP custody, V4 swap deltas, ERC6909 claims, cash settlement, treasury liabilities and collector-only redemption. Contributors do not reimplement these layers.
+The base supplies lifecycle checks, permanent LP custody, V4 swap deltas, ERC6909 claims, cash settlement, treasury liabilities and collector-only redemption. Contributors do not reimplement these layers. The static and dynamic examples use this oracle-free base.
 
 [`LaunchDeltaAccountingFixture`](contracts/test/LaunchDeltaAccountingFixture.sol) checks actual wallet changes against swap deltas, cleared manager/hook deltas, and fee liabilities backed by tracked claims or settled cash. The launch harness runs these checks in both fee modes and verifies donations stay excluded after collection. This is test-only; lifecycle authorization and callback ownership are unchanged.
 
 The retained lifecycle V1 wire interfaces and canonical `ILaunchFeeSourceV1` are still used by the current target ADR. Hub economics use V3; retired launch/router, reward-tracker and V1 fee-hub APIs are not shipped.
+
+### Optional truncated oracle
+
+[`PoolBoundTruncatedOracleV2`](contracts/src/hooks/v4/authoring/PoolBoundTruncatedOracleV2.sol) extends the base with quote-normalized, per-block clamped observations. Opt in by inheriting it instead of the core-only base:
+
+```solidity
+import { PoolBoundHookParametersV1 } from "@black-market/hooks/v4/PoolBoundHookParametersV1.sol";
+import { PoolBoundTruncatedOracleV2 } from "@black-market/hooks/v4/authoring/PoolBoundTruncatedOracleV2.sol";
+
+contract MyOracleHook is PoolBoundTruncatedOracleV2 {
+    constructor(PoolBoundHookParametersV1 memory parameters) PoolBoundTruncatedOracleV2(parameters) {}
+
+    function authorFeeBps() public pure override returns (uint16) {
+        return 500;
+    }
+}
+```
+
+This is still one deployed hook, not a separate oracle deployment. The base's external callbacks and settlement remain nonvirtual; protected notifications let the provided oracle template record authenticated initialization, pre-swap and pre-liquidity-change snapshots. The oracle template seals its notification overrides.
+
+History, observation storage, cardinality management and registry-snapshot checks live only in the optional template. Its [interface](contracts/src/hooks/v4/authoring/ILaunchHookOracleV1.sol) exposes `observeTruncated`, `observations`, `oracleState`, `validateOracleConfig` and capacity growth. Queries before initialization or before retained history fail closed.
+
+The core retains `oracleInitializedAt(poolId)` because the deployed adapter reads it: core-only hooks return `0`, while composed hooks return their genuine initialization time. The constructor/config tuple still contains `oracleFactory` and `oracleConfigId`; the current launch factory validates the registered config even for core-only hooks. These wire fields do not create oracle history.
+
+Composition adds history; it does not make `_calculateRate` historical. That seam remains pure and its existing context has no historical measurements.
+
+Under the pinned compiler profile, `ReferenceBoundHook` is 19,011 runtime bytes, `DynamicFeeHook` is 19,345, and the composed static fixture is 24,535. The oracle adds 5,524 bytes to the otherwise equivalent static hook. The composed fixture has only 41 bytes of EIP-170 headroom; additional policy code must be measured, and fitting a core-only policy does not prove it fits with the oracle. Do not change the compiler profile or split deployment to evade the limit. Changes to the artifact require fresh qualification, approved hashes and newly mined salts.
+
+CI separately reconstructs and launches the composed fixture, exercising genuine genesis, capped growth, normalized/clamped sampling, same-block swaps, stored and extrapolated accumulators, historical-query rejection and the same accounting/royalty checks as the core-only examples.
+
 
 ## Local checks
 

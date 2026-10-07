@@ -318,6 +318,19 @@ def qualify(output, rows, *, rpc_url=None):
             candidate_manifest.write_bytes(manifest_path.read_bytes())
             candidate_manifest.chmod(0o444)
             env, inputs = candidate_environment(report["declared"], selected, candidate_manifest, receipts, environment)
+            # Derive feature presence from the independent compiler, not author metadata.
+            rebuilt = artifacts.load_json((candidate / "compiler-reconstruction/compiler-output.json").read_bytes())
+            compiled_metadata = artifacts.load_json(rebuilt["contracts"][
+                str((folder / row["source"]).relative_to(ROOT))
+            ][row["contract"]]["metadata"])
+            abi = compiled_metadata["output"]["abi"]
+            has_oracle = any(
+                item.get("type") == "function" and item.get("name") == "observeTruncated"
+                and [argument["type"] for argument in item["inputs"]] == ["bytes32", "uint32[]"]
+                for item in abi
+            )
+            env["HOOK_HAS_ORACLE"] = "true" if has_oracle else "false"
+            inputs["HOOK_HAS_ORACLE"] = has_oracle
             config = candidate / "external-artifact.foundry.toml"
             config.write_text(resolved_config + '\n[[profile.default.fs_permissions]]\naccess = "read-write"\npath = '
                               + json.dumps(str(candidate)) + "\n")
@@ -351,10 +364,55 @@ def qualify(output, rows, *, rpc_url=None):
             save_json(report_path, report)
             save_json(candidate / "qualification-result.json", result)
         qualified.append({"name": label, "evidence": f"{label}/qualification-result.json", "locallyQualified": True})
+    qualify_oracle_composition(output, solc, environment, resolved_config, rpc)
     save_json(output / "catalogue-result.json", {
         "upstream": json.loads((ROOT / "scripts/upstream.json").read_text()), "forkManifestSha256": manifest_hash,
         "hooks": qualified, "locallyQualified": True, "fixtureOnly": True, "productionAdmission": False,
+        "oracleComposition": {"evidence": "oracle-composition/qualification-result.json",
+                              "locallyQualified": True, "fixtureOnly": True},
     })
+
+
+def qualify_oracle_composition(output, solc, environment, resolved_config, rpc):
+    """Exercise the opt-in template as a fixture, not another catalogue submission."""
+    candidate = output / "oracle-composition"
+    candidate.mkdir()
+    selected = candidate / "qualified-hook-artifact.json"
+    selected.write_bytes((ROOT / "out/TruncatedOracleComposition.t.sol/StaticOracleHook.json").read_bytes())
+    selected.chmod(0o444)
+    measured = artifacts.artifact_evidence(selected)
+    metadata = artifacts.artifact_metadata(artifacts.load_json(selected.read_bytes()), selected)
+    require(metadata["settings"]["compilationTarget"] == {
+        "contracts/test/TruncatedOracleComposition.t.sol": "StaticOracleHook"
+    }, "Oracle fixture artifact target mismatch")
+    pins = artifacts.source_inventory(measured, ROOT)
+    measured["compilerReconstruction"] = artifacts.reconstruct_artifact(
+        measured, pins, root=ROOT, solc=solc, output=candidate / "compiler-reconstruction")
+    measured["compilerSourceCorrespondenceVerified"] = True
+    save_json(candidate / "source-manifest.json", {"sources": pins})
+    declared = artifacts.load_json((ROOT / "hooks/reference-bound/integration.json").read_bytes())
+    manifest_path = output / "robinhood.json"
+    manifest = fork_manifest(manifest_path)
+    receipts = candidate / "receipt-evidence.json"
+    env, inputs = candidate_environment(declared, selected, manifest_path, receipts, environment)
+    env["HOOK_HAS_ORACLE"] = "true"
+    inputs["HOOK_HAS_ORACLE"] = True
+    config = candidate / "external-artifact.foundry.toml"
+    config.write_text(resolved_config + '\n[[profile.default.fs_permissions]]\naccess = "read-write"\npath = '
+                      + json.dumps(str(candidate)) + "\n")
+    env["FOUNDRY_CONFIG"] = str(config)
+    inputs["FOUNDRY_CONFIG"] = str(config)
+    save_json(candidate / "runtime-inputs.json", inputs)
+    result = {"locallyQualified": False, "fixtureOnly": True, "productionAdmission": False,
+              "artifactEvidence": measured}
+    save_json(candidate / "qualification-result.json", result)
+    run(["forge", "test", "--match-path", HARNESS, "--fork-url", rpc,
+         "--fork-block-number", str(manifest["forkBlock"]), "--root", str(ROOT), "-vvv"],
+        ROOT, candidate, "foundry-qualification", env)
+    result["receiptEvidence"] = receipt_evidence(receipts, manifest, declared)
+    result["locallyQualified"] = True
+    save_json(candidate / "qualification-result.json", result)
+    print("Qualified optional oracle composition fixture", flush=True)
 
 
 def main():

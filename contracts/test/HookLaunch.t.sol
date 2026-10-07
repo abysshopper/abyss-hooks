@@ -16,8 +16,11 @@ import { FullMath } from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import { IAbyssLaunchFactory } from "../src/interfaces/IAbyssLaunch.sol";
 import { LaunchOrchestratorV1, LaunchImplementationRegistryV2, PoolMarketAdapterV1, PoolFeeCollectorFactoryV1, V4FeeCollectorV2 } from "../src/interfaces/IForkLaunch.sol";
 import { PoolHookDeployerV1 } from "../src/hooks/v4/authoring/PoolHookDeployerV1.sol";
+import { PoolBoundLaunchHookBaseV2 } from "../src/hooks/v4/authoring/PoolBoundLaunchHookBaseV2.sol";
 import { ILaunchHookV1 } from "../src/hooks/v4/authoring/ILaunchHookV1.sol";
 import { ILaunchHookAuthorTerms } from "../src/hooks/v4/authoring/ILaunchHookAuthorTerms.sol";
+import { ILaunchHookOracleV1 } from "../src/hooks/v4/authoring/ILaunchHookOracleV1.sol";
+import { TruncatedOracle } from "../src/hooks/v4/TruncatedOracle.sol";
 import { PoolBoundHookParametersV1 } from "../src/hooks/v4/PoolBoundHookParametersV1.sol";
 import { V4FeeLiquidityLockerV2 } from "../src/launch/fees/v2/V4FeeLiquidityLockerV2.sol";
 import { FeeAssetPolicyV2 } from "../src/launch/fees/v2/ILaunchFeeHubV2.sol";
@@ -199,6 +202,110 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         _assertHookFeeBacking(manager, key);
     }
 
+    function testOptionalOracleComposition() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        Receipts memory received = _scenarioWithFees(mode, 700_001, 10_000);
+        ILaunchHookV1 hook = ILaunchHookV1(received.hook);
+        vm.expectRevert();
+        hook.oracleInitializedAt(bytes32(uint256(received.poolId) ^ 1));
+        if (!vm.envOr("HOOK_HAS_ORACLE", false)) {
+            assertEq(hook.oracleInitializedAt(received.poolId), 0, "no oracle means no readiness");
+            (bool success,) = received.hook.staticcall(
+                abi.encodeCall(ILaunchHookOracleV1.observeTruncated, (received.poolId, new uint32[](1)))
+            );
+            assertFalse(success, "core-only hook must not expose historical queries");
+            return;
+        }
+        ILaunchHookOracleV1 oracle = ILaunchHookOracleV1(received.hook);
+        _sameBlockTradeLeavesOracleUnchanged(received);
+        _assertOracleElapsedHistory(received);
+        (, uint16 cardinality, uint16 next,,,,, uint16 cap) = oracle.oracleState(received.poolId);
+        assertEq(cardinality, next);
+        oracle.increaseObservationCardinalityNext(received.poolId, type(uint16).max);
+        (,, next,,,,,) = oracle.oracleState(received.poolId);
+        assertEq(next, cap, "growth must respect the frozen registry cap");
+        uint32[] memory tooOld = new uint32[](1);
+        tooOld[0] = uint32(block.timestamp - hook.oracleInitializedAt(received.poolId) + 1);
+        vm.expectRevert(TruncatedOracle.ObservationTooOld.selector);
+        oracle.observeTruncated(received.poolId, tooOld);
+    }
+
+    function testNoOracleHistoryBeforePoolInitialization() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        LaunchPlanV1 memory plan = _planWithFees(mode, 800_001, developerBps, 10_000);
+        PoolBoundLaunchHookBaseV2 hook = _predeployPlannedHook(plan);
+        bytes32 id = hook.boundPoolId();
+        assertFalse(hook.initialized(id));
+        assertEq(hook.oracleInitializedAt(id), 0);
+        assertEq(vm.getNonce(address(hook)), 1);
+        if (vm.envOr("HOOK_HAS_ORACLE", false)) {
+            ILaunchHookOracleV1 oracle = ILaunchHookOracleV1(address(hook));
+            vm.expectRevert(TruncatedOracle.InvalidObservationState.selector);
+            oracle.observeTruncated(id, new uint32[](1));
+            vm.expectRevert(TruncatedOracle.InvalidObservationState.selector);
+            oracle.increaseObservationCardinalityNext(id, 2);
+        }
+    }
+
+    function _predeployPlannedHook(LaunchPlanV1 memory plan) private returns (PoolBoundLaunchHookBaseV2) {
+        (PoolBoundHookParametersV1 memory parameters, bytes32 salt) =
+            adapter.collectorFactory().poolBoundHookParameters(address(adapter), core.predictToken(plan), plan.markets[0]);
+        return deployer.deploy(parameters, salt);
+    }
+
+    function testRegistrationRejectsMalformedGetterWords() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        for (uint256 i; i < 4; ++i) {
+            uint256 snapshot = vm.snapshotState();
+            LaunchPlanV1 memory plan = _planWithFees(mode, 900_001 + i, developerBps, 10_000);
+            PoolBoundLaunchHookBaseV2 hook = _predeployPlannedHook(plan);
+            vm.prank(creator);
+            bytes32 launchId = core.beginLaunch(plan, LaunchModeV1.Staged).launchId;
+            if (i == 3) {
+                vm.mockCall(address(locker), abi.encodeCall(V4FeeLiquidityLockerV2.isSealed, (hook.boundPoolId())),
+                    abi.encode(uint256(2)));
+            } else {
+                bytes memory response = i == 0 ? new bytes(0) : i == 1 ? new bytes(31)
+                    : abi.encode(uint256(uint160(address(adapter))) | (uint256(1) << 160));
+                vm.mockCall(address(locker), abi.encodeCall(V4FeeLiquidityLockerV2.launcher, ()), response);
+            }
+            vm.prank(creator);
+            vm.expectRevert();
+            core.prepareMarkets(plan, 0, 1);
+            assertFalse(hook.registered(hook.boundPoolId()));
+            assertEq(core.readLaunchProgress(launchId).preparedMarkets, 0);
+            vm.clearMockedCalls();
+            require(vm.revertToStateAndDelete(snapshot), "restore isolated ABI scenario");
+        }
+    }
+
+    function testRegistrationBubblesGetterRevert() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        LaunchPlanV1 memory plan = _planWithFees(mode, 1_000_001, developerBps, 10_000);
+        PoolBoundLaunchHookBaseV2 hook = _predeployPlannedHook(plan);
+        vm.prank(creator);
+        bytes32 launchId = core.beginLaunch(plan, LaunchModeV1.Staged).launchId;
+        bytes memory reason = abi.encodeWithSignature("GetterRejected(uint256)", uint256(7));
+        vm.mockCallRevert(address(locker), abi.encodeCall(V4FeeLiquidityLockerV2.launcher, ()), reason);
+        vm.prank(creator);
+        vm.expectRevert(reason);
+        core.prepareMarkets(plan, 0, 1);
+        assertFalse(hook.registered(hook.boundPoolId()));
+        assertEq(core.readLaunchProgress(launchId).preparedMarkets, 0);
+    }
+
+    function testRegistrationAcceptsCleanGetterWithTrailingData() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        _predeployPlannedHook(_planWithFees(mode, 1_100_001, developerBps, 10_000));
+        vm.mockCall(address(locker), abi.encodeCall(V4FeeLiquidityLockerV2.launcher, ()),
+            abi.encode(address(adapter), bytes32(uint256(123))));
+        Receipts memory received = _scenario(mode, 1_100_001);
+        assertEq(received.authorPaid, received.expectedAuthorPaid);
+        assertEq(received.ownerPaid, received.expectedOwnerPaid);
+        assertGt(received.hookFeesCollected, 0);
+        assertEq(received.lpFeesCollected, 0);
+    }
+
     function _admitCandidate() private {
         bytes memory creation = vm.getCode(vm.envString("HOOK_ARTIFACT"));
         deployer = new PoolHookDeployerV1(creation);
@@ -273,6 +380,8 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         assertEq(deployer.deployedCodeHash(prepared.identity.hook), prepared.identity.hook.codehash);
         assertEq(keccak256(vm.getCode(vm.envString("HOOK_ARTIFACT"))), deployer.creationCodeHash());
         assertGt(ILaunchHookV1(prepared.identity.hook).openingCompletedAt(prepared.identity.poolId), 0);
+        assertEq(vm.getNonce(prepared.identity.hook), 1, "hook must not create another contract");
+        _assertOracleGenesis(prepared.identity.hook, prepared.identity.poolId);
         ILaunchHookAuthorTerms terms = ILaunchHookAuthorTerms(prepared.identity.hook);
         assertEq(terms.authorFeeBps(), developerBps);
         assertEq(uint256(terms.swapFeeModel()), vm.envUint("HOOK_SWAP_FEE_MODEL"));
@@ -355,17 +464,137 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         SwapBalances memory beforeBalances = _snapshotSwapBalances(key, creator);
         SwapParams memory params = SwapParams(zeroForOne, amount, zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
         TradeFee memory fee = _tradeFeeBefore(key, params);
+        OracleBefore memory oracleBefore = _oracleBeforeSwap(key);
         emit log_named_uint("hook rate pips", fee.rate);
         vm.prank(creator);
         BalanceDelta delta = trader.trade(key, params);
         _assertSwapAccounting(manager, key, address(trader), creator, beforeBalances, delta);
         _assertTradeFee(key, params, delta, fee);
+        _assertOracleAfterSwap(key, oracleBefore);
         int128 input = zeroForOne ? delta.amount0() : delta.amount1();
         int128 output = zeroForOne ? delta.amount1() : delta.amount0();
         assertLt(input, 0);
         assertGt(output, 0);
         if (amount < 0) assertEq(int256(input), amount);
         else assertEq(int256(output), amount);
+    }
+
+    struct OracleBefore {
+        uint16 index;
+        int24 tick;
+        int24 spotTick;
+        int24 maximumMove;
+        uint32 timestamp;
+        int56 tickCumulative;
+        uint160 liquidityCumulative;
+        uint128 liquidity;
+    }
+
+    function _assertOracleGenesis(address hook, bytes32 id) private {
+        uint256 genesis = ILaunchHookV1(hook).oracleInitializedAt(id);
+        if (!vm.envOr("HOOK_HAS_ORACLE", false)) {
+            assertEq(genesis, 0);
+            return;
+        }
+        assertEq(genesis, block.timestamp, "oracle history starts at actual initialization");
+        ILaunchHookOracleV1 oracle = ILaunchHookOracleV1(hook);
+        (uint16 index, uint16 cardinality, uint16 next,,,,, uint16 cap) = oracle.oracleState(id);
+        assertEq(index, 0);
+        assertEq(cardinality, 1, "initialization must not fabricate history");
+        assertEq(next, 1);
+        (uint32 timestamp, int56 ticks, uint160 liquidity, bool initialized) = oracle.observations(id, 0);
+        assertEq(timestamp, uint32(genesis));
+        assertEq(ticks, 0);
+        assertEq(liquidity, 0);
+        assertTrue(initialized);
+        oracle.increaseObservationCardinalityNext(id, 3);
+        (, cardinality, next,,,,,) = oracle.oracleState(id);
+        assertEq(cardinality, 1, "prepared capacity is not populated history");
+        assertEq(next, cap < 3 ? cap : 3);
+    }
+
+    function _oracleBeforeSwap(PoolKey memory key) private view returns (OracleBefore memory snapshot) {
+        if (!vm.envOr("HOOK_HAS_ORACLE", false)) return snapshot;
+        ILaunchHookOracleV1 oracle = ILaunchHookOracleV1(address(key.hooks));
+        bytes32 id = PoolId.unwrap(key.toId());
+        (snapshot.index,,, snapshot.tick,,, snapshot.maximumMove,) = oracle.oracleState(id);
+        (snapshot.timestamp, snapshot.tickCumulative, snapshot.liquidityCumulative,) =
+            oracle.observations(id, snapshot.index);
+        (, snapshot.spotTick,,) = StateLibrary.getSlot0(manager, key.toId());
+        snapshot.liquidity = StateLibrary.getLiquidity(manager, key.toId());
+    }
+
+    function _expectedOracleTick(OracleBefore memory previous, bool quoteIs0) private pure returns (int256) {
+        int256 spot = quoteIs0 ? -int256(previous.spotTick) : int256(previous.spotTick);
+        int256 lower = int256(previous.tick) - previous.maximumMove;
+        int256 upper = int256(previous.tick) + previous.maximumMove;
+        return spot < lower ? lower : spot > upper ? upper : spot;
+    }
+
+    function _assertOracleAfterSwap(PoolKey memory key, OracleBefore memory beforeOracle) private view {
+        if (!vm.envOr("HOOK_HAS_ORACLE", false)) return;
+        ILaunchHookOracleV1 oracle = ILaunchHookOracleV1(address(key.hooks));
+        bytes32 id = PoolId.unwrap(key.toId());
+        (uint16 index, uint16 cardinality,, int24 tick, uint64 lastBlock,,,) = oracle.oracleState(id);
+        assertEq(lastBlock, block.number);
+        assertEq(index, (beforeOracle.index + 1) % cardinality);
+        assertEq(tick, _expectedOracleTick(beforeOracle, Currency.unwrap(key.currency0) == address(weth)));
+        (uint32 timestamp, int56 ticks, uint160 liquidity, bool initialized) = oracle.observations(id, index);
+        assertEq(timestamp, uint32(block.timestamp));
+        assertTrue(initialized);
+        unchecked {
+            uint32 elapsed = timestamp - beforeOracle.timestamp;
+            assertEq(ticks, beforeOracle.tickCumulative + int56(beforeOracle.tick) * int56(uint56(elapsed)));
+            assertEq(liquidity, beforeOracle.liquidityCumulative
+                + ((uint160(elapsed) << 128) / (beforeOracle.liquidity > 0 ? beforeOracle.liquidity : 1)));
+        }
+        // Reading exactly at the latest checkpoint returns its stored accumulators.
+        uint32[] memory nowOnly = new uint32[](1);
+        (int56[] memory observedTicks, uint160[] memory observedLiquidity) =
+            oracle.observeTruncated(id, nowOnly);
+        assertEq(observedTicks[0], ticks);
+        assertEq(observedLiquidity[0], liquidity);
+    }
+
+    function _sameBlockTradeLeavesOracleUnchanged(Receipts memory received) private {
+        PoolKey memory key = ILaunchHookV1(received.hook).poolKey(received.poolId);
+        OracleBefore memory beforeOracle = _oracleBeforeSwap(key);
+        bool zeroForOne = Currency.unwrap(key.currency0) == address(weth);
+        SwapParams memory params = SwapParams(zeroForOne, -int256(1 ether),
+            zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
+        TradeFee memory beforeFee = _tradeFeeBefore(key, params);
+        SwapBalances memory balances = _snapshotSwapBalances(key, creator);
+        vm.prank(creator);
+        BalanceDelta delta = trader.trade(key, params);
+        _assertSwapAccounting(manager, key, address(trader), creator, balances, delta);
+        _assertTradeFee(key, params, delta, beforeFee);
+        ILaunchHookOracleV1 oracle = ILaunchHookOracleV1(received.hook);
+        (uint16 index,,, int24 tick,,,,) = oracle.oracleState(received.poolId);
+        assertEq(index, beforeOracle.index, "same-block swap must not advance the ring");
+        assertEq(tick, beforeOracle.tick, "same-block swap must not reclamp the tick");
+        (uint32 timestamp, int56 ticks, uint160 liquidity,) = oracle.observations(received.poolId, index);
+        assertEq(timestamp, beforeOracle.timestamp);
+        assertEq(ticks, beforeOracle.tickCumulative);
+        assertEq(liquidity, beforeOracle.liquidityCumulative);
+        _assertHookFeeBacking(manager, key);
+    }
+
+    function _assertOracleElapsedHistory(Receipts memory received) private {
+        PoolKey memory key = ILaunchHookV1(received.hook).poolKey(received.poolId);
+        OracleBefore memory previous = _oracleBeforeSwap(key);
+        vm.warp(block.timestamp + 6);
+        vm.roll(block.number + 1);
+        uint32[] memory secondsAgos = new uint32[](2);
+        secondsAgos[1] = 6;
+        (int56[] memory ticks, uint160[] memory liquidity) =
+            ILaunchHookOracleV1(received.hook).observeTruncated(received.poolId, secondsAgos);
+        assertEq(ticks[1], previous.tickCumulative);
+        assertEq(liquidity[1], previous.liquidityCumulative);
+        unchecked {
+            assertEq(ticks[0], previous.tickCumulative + int56(previous.tick) * 6);
+            assertEq(liquidity[0], previous.liquidityCumulative
+                + ((uint160(6) << 128) / (previous.liquidity > 0 ? previous.liquidity : 1)));
+        }
     }
 
     struct TradeFee {

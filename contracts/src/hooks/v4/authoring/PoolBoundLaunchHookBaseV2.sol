@@ -3,7 +3,6 @@ pragma solidity ^0.8.28;
 
 import { LaunchHookReentrancyGuardV1 } from "./LaunchHookReentrancyGuardV1.sol";
 import { LaunchHookFeeRateV2, LaunchHookFeeContextV2 } from "./LaunchHookFeeRateV2.sol";
-import { PoolBoundLaunchHookValidationV2 } from "./PoolBoundLaunchHookValidationV2.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IPoolManager } from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import { IHooks } from "@uniswap/v4-core/src/interfaces/IHooks.sol";
@@ -16,9 +15,13 @@ import { PoolId, PoolIdLibrary } from "@uniswap/v4-core/src/types/PoolId.sol";
 import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
 import { ModifyLiquidityParams, SwapParams } from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import { IAbyssLaunchFactory } from "../../../interfaces/IAbyssLaunch.sol";
+import { ILaunchFeeSourceV1 } from "../../../launch/fees/v1/ILaunchFeeSourceV1.sol";
+import { ILaunchFeeHubV2 } from "../../../launch/fees/v2/ILaunchFeeHubV2.sol";
+import { ILaunchFeeHubV3, SourceTermsV3 } from "../../../launch/fees/v3/ILaunchFeeHubV3.sol";
 import { V4FeeLiquidityLockerV2 } from "../../../launch/fees/v2/V4FeeLiquidityLockerV2.sol";
+import { ILaunchLifecycleV1 } from "../../../launch/lifecycle/v1/ILaunchLifecycleV1.sol";
+import { LaunchExecutionContextV1, LaunchProgressV1, LaunchOperationV1, LaunchPhaseV1 } from "../../../launch/lifecycle/v1/LaunchTypesV1.sol";
 import { PoolBoundHookParametersV1 } from "../PoolBoundHookParametersV1.sol";
-import { TruncatedOracle } from "../TruncatedOracle.sol";
 import { V4HookFlags } from "../V4HookFlags.sol";
 import { ILaunchHookV1 } from "./ILaunchHookV1.sol";
 
@@ -29,15 +32,23 @@ interface IPoolBoundLaunchHookRegistrarV2 {
     function locker() external view returns (address);
 }
 
+interface IPoolBoundLaunchHookValidationCollectorV2 is ILaunchFeeSourceV1 {
+    function poolManager() external view returns (IPoolManager);
+    function locker() external view returns (V4FeeLiquidityLockerV2);
+    function hookRoot() external view returns (address);
+    function poolId() external view returns (bytes32);
+    function poolKey() external view returns (PoolKey memory);
+    function expectedPositionCount() external view returns (uint256);
+}
+
 /// @notice Versioned one-market scalar accounting with an authenticated frozen pure rate seam.
 /// @dev The constructor tuple and full-key V2 collector/locker ABI stay unchanged.
-///      Final callbacks, custody, full-fill, oracle and LP checkpoint guards are nonvirtual.
-///      Cold registration and author-payment checks live in a fixed constructor-created helper.
+///      Final callbacks, custody, full-fill, LP checkpoint and payment guards are nonvirtual.
+///      Registration and author-payment checks run directly against the frozen core fields.
 ///      Inheritance is not a sandbox: added selectors, assembly and the full artifact need review.
 abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentrancyGuardV1, LaunchHookFeeRateV2 {
     using BalanceDeltaLibrary for BalanceDelta;
     using PoolIdLibrary for PoolKey;
-    using TruncatedOracle for TruncatedOracle.Observation[65_535];
 
     error Unauthorized();
     error InvalidConfiguration();
@@ -54,7 +65,6 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
     error FeeSettlementRequired();
 
     uint24 public constant override PIPS_DENOMINATOR = 1_000_000;
-    uint16 public constant override MAX_ORACLE_CARDINALITY = 4_096;
     uint160 public constant override REQUIRED_HOOK_FLAGS = V4HookFlags.SHARED_LAUNCH_V2_PERMISSIONS;
     uint160 public constant override ALL_HOOK_MASK = V4HookFlags.ALL_HOOK_MASK;
     uint256 private constant MAX_MANAGER_DELTA = uint256(uint128(type(int128).max));
@@ -79,15 +89,11 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
     bytes32 public immutable marketCommitment;
     uint160 public immutable openingSqrtPriceX96;
     uint32 public immutable expectedPositionCount;
-    PoolBoundLaunchHookValidationV2 public immutable validationHelper;
     address private immutable _asset0;
     address private immutable _asset1;
-    bool private immutable _quoteIs0;
 
     PoolKey private _key;
     PoolConfig private _config;
-    OracleState private _oracleState;
-    TruncatedOracle.Observation[65_535] private _observations;
     FeeAccounting private _currency0Accounting;
     FeeAccounting private _currency1Accounting;
     PendingSwapFee private _pendingSwapFee;
@@ -105,9 +111,6 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
     );
     event FeesCollected(
         bytes32 indexed poolId, address indexed collector, uint256 amount0, uint256 amount1
-    );
-    event IncreaseObservationCardinalityNext(
-        bytes32 indexed poolId, uint16 cardinalityNextOld, uint16 cardinalityNextNew
     );
     event OpeningCompleted(bytes32 indexed poolId, uint256 indexed completedAt);
     event LpFeesCheckpointed(
@@ -127,14 +130,12 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         marketCommitment = parameters.marketCommitment;
         openingSqrtPriceX96 = parameters.sqrtPriceX96;
         expectedPositionCount = parameters.expectedPositionCount;
-        validationHelper = new PoolBoundLaunchHookValidationV2();
 
         bool quoteIs0 = parameters.quoteCurrency < parameters.token;
         address asset0 = quoteIs0 ? parameters.quoteCurrency : parameters.token;
         address asset1 = quoteIs0 ? parameters.token : parameters.quoteCurrency;
         _asset0 = asset0;
         _asset1 = asset1;
-        _quoteIs0 = quoteIs0;
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(asset0),
             currency1: Currency.wrap(asset1),
@@ -155,10 +156,6 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
             externalLiquidityDisabled: parameters.externalLiquidityDisabled,
             oracleConfigId: parameters.oracleConfigId
         });
-        (uint24 maxAbsTickMove, uint16 cardinality) =
-            validateOracleConfig(parameters.oracleConfigId);
-        _oracleState.maxAbsTickMove = int24(maxAbsTickMove);
-        _oracleState.cardinalityCap = cardinality;
     }
 
     modifier onlyPoolManager() {
@@ -225,70 +222,6 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         return _accounting(asset).aggregateManagerClaims;
     }
 
-    function oracleState(bytes32 id)
-        external
-        view
-        override
-        returns (
-            uint16 index,
-            uint16 cardinality,
-            uint16 cardinalityNext,
-            int24 tick,
-            uint64 lastBlock,
-            uint64 initializedAt,
-            int24 maxAbsTickMove,
-            uint16 cardinalityCap
-        )
-    {
-        _requireBoundPool(id);
-        OracleState storage state = _oracleState;
-        return (
-            state.index,
-            state.cardinality,
-            state.cardinalityNext,
-            state.tick,
-            state.lastBlock,
-            state.initializedAt,
-            state.maxAbsTickMove,
-            state.cardinalityCap
-        );
-    }
-
-    function observations(bytes32 id, uint256 index)
-        external
-        view
-        override
-        returns (
-            uint32 blockTimestamp,
-            int56 tickCumulative,
-            uint160 secondsPerLiquidityCumulativeX128,
-            bool observationInitialized
-        )
-    {
-        _requireBoundPool(id);
-        TruncatedOracle.Observation storage observation = _observations[index];
-        return (
-            observation.blockTimestamp,
-            observation.tickCumulative,
-            observation.secondsPerLiquidityCumulativeX128,
-            observation.initialized
-        );
-    }
-
-    /// @notice Validates the canonical registry entry; numeric overrides are never accepted.
-    function validateOracleConfig(bytes32 oracleConfigId)
-        public
-        view
-        override
-        returns (uint24 maxAbsTickMove, uint16 cardinality)
-    {
-        (maxAbsTickMove, cardinality) = oracleFactory.oracleConfigs(oracleConfigId);
-        if (
-            maxAbsTickMove == 0 || maxAbsTickMove > uint24(uint256(int256(TickMath.MAX_TICK)))
-                || cardinality < 2 || cardinality > MAX_ORACLE_CARDINALITY
-        ) revert InvalidConfiguration();
-    }
-
     /// @notice The registrar binds only the collector, once, inside the exact core Prepare call.
     function registerPool(PoolKey calldata key, PoolConfig calldata config)
         external
@@ -298,18 +231,14 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         if (msg.sender != registrar) revert Unauthorized();
         _requireBoundPool(PoolId.unwrap(key.toId()));
         if (_registered) revert AlreadyRegistered();
-        validationHelper.validateRegistration(config);
-        (uint24 maxAbsTickMove, uint16 cardinality) = validateOracleConfig(config.oracleConfigId);
-        if (
-            int24(maxAbsTickMove) != _oracleState.maxAbsTickMove
-                || cardinality != _oracleState.cardinalityCap
-        ) revert InvalidConfiguration();
+        _validateRegistration(config);
+        _onPoolRegistered(config);
         _config.collector = config.collector;
         _registered = true;
         emit PoolRegistered(boundPoolId, config.collector, liquidityLocker);
     }
 
-    /// @notice One-shot terminal opening completion, separate from genuine oracle genesis.
+    /// @notice One-shot terminal opening completion, separate from optional oracle genesis.
     /// @dev Call only after all externally callable opening work and final continuity checks;
     ///      there is no general swap gate or beforeInitialize permission.
     function completePoolOpening(PoolKey calldata key) external override nonReentrant {
@@ -338,7 +267,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         _validateAuthorTerms();
     }
 
-    /// @dev Only the exact planned registrar/price initializes; no fabricated oracle history.
+    /// @dev Only the exact planned registrar and price initialize the bound pool.
     function afterInitialize(address sender, PoolKey calldata key, uint160 sqrtPriceX96, int24 tick)
         external
         override
@@ -351,12 +280,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
             !_registered || _initialized || sender != registrar
                 || sqrtPriceX96 != openingSqrtPriceX96
         ) revert InvalidPool();
-        OracleState storage state = _oracleState;
-        (state.cardinality, state.cardinalityNext) =
-            _observations.initialize(uint32(block.timestamp));
-        state.tick = TruncatedOracle.normalizeTick(tick, _quoteIs0);
-        state.lastBlock = uint64(block.number);
-        state.initializedAt = uint64(block.timestamp);
+        _onPoolInitialized(tick);
         _initialized = true;
         emit PoolInitialized(boundPoolId);
         return this.afterInitialize.selector;
@@ -371,7 +295,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         _initializedPool(key);
         _validateLiquidityCaller(sender, params);
         _authenticateAuthorTerms();
-        _recordBeforeLiquidityChange(params);
+        _onBeforeLiquidityChange(params);
         return this.beforeAddLiquidity.selector;
     }
 
@@ -383,7 +307,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
     ) external override onlyPoolManager nonReadReentrant returns (bytes4) {
         _initializedPool(key);
         _validateLiquidityCaller(sender, params);
-        _recordBeforeLiquidityChange(params);
+        _onBeforeLiquidityChange(params);
         return this.beforeRemoveLiquidity.selector;
     }
 
@@ -453,7 +377,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
 
     /// @notice Current authenticated hook-rate preview, not an eventual exact-output fee amount.
     /// @dev Uses the actual manager pre-swap price/liquidity and the original signed request.
-    ///      Does not reserve a swap context, update the oracle or mutate payment authentication.
+    ///      Does not reserve a swap context, notify observers or mutate payment authentication.
     function feeRate(SwapParams calldata params) external view nonReadReentrant returns (uint24) {
         if (!_initialized) revert InvalidPool();
         _validateAuthorTerms();
@@ -468,8 +392,8 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         (LaunchHookFeeContextV2 memory context, int24 spotTick) = _swapRateContext(params);
         uint128 activeLiquidity = context.activeLiquidity;
         rate = _freezeRate(_pendingSwapFee, context, sender, params);
-        // The pure seam may mutate memory; the oracle uses the authenticated value snapshot.
-        if (block.number != _oracleState.lastBlock) _record(spotTick, activeLiquidity);
+        // The pure seam may mutate memory; observers receive the authenticated value snapshot.
+        _onBeforeSwap(spotTick, activeLiquidity);
     }
 
     function _swapRateContext(SwapParams calldata params)
@@ -518,48 +442,9 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         return this.afterDonate.selector;
     }
 
-    /// @notice Quote-per-base tick and liquidity cumulatives for the exact single pool.
-    /// @dev Canonical V2 interpolation, boundaries and modular counters; pre-genesis fails closed.
-    function observeTruncated(bytes32 id, uint32[] calldata secondsAgos)
-        external
-        view
-        override
-        returns (
-            int56[] memory tickCumulatives,
-            uint160[] memory secondsPerLiquidityCumulativeX128s
-        )
-    {
-        _requireBoundPool(id);
-        OracleState storage state = _oracleState;
-        if (state.cardinality == 0) revert TruncatedOracle.InvalidObservationState();
-        return _observations.observe(
-            uint32(block.timestamp),
-            secondsAgos,
-            state.tick,
-            state.index,
-            StateLibrary.getLiquidity(poolManager, PoolId.wrap(boundPoolId)),
-            state.cardinality
-        );
-    }
-
-    /// @notice Monotonic capacity preparation capped by the frozen constructor snapshot.
-    function increaseObservationCardinalityNext(bytes32 id, uint16 requested)
-        external
-        override
-        nonReadReentrant
-    {
-        _requireBoundPool(id);
-        OracleState storage state = _oracleState;
-        if (requested > state.cardinalityCap) requested = state.cardinalityCap;
-        uint16 oldNext = state.cardinalityNext;
-        uint16 newNext = _observations.grow(oldNext, requested);
-        state.cardinalityNext = newNext;
-        if (oldNext != newNext) emit IncreaseObservationCardinalityNext(id, oldNext, newNext);
-    }
-
     function oracleInitializedAt(bytes32 id) external view override returns (uint256) {
         _requireBoundPool(id);
-        return _oracleState.initializedAt;
+        return _oracleInitializedAt();
     }
 
     /// @notice Collector-only redemption of tracked fees to frozen collector/protocol treasury.
@@ -642,19 +527,152 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         ) revert InvalidConfiguration();
     }
 
+    function _validateRegistration(PoolConfig calldata config) private view {
+        IPoolManager manager = poolManager;
+        address locker = liquidityLocker;
+        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(manager, PoolId.wrap(boundPoolId));
+        if (
+            _asset0.code.length == 0 || _asset1.code.length == 0 || sqrtPriceX96 != 0
+                || config.liquidityLocker != locker
+                || Currency.unwrap(config.quoteCurrency) != Currency.unwrap(_config.quoteCurrency)
+                || config.feeMode != _config.feeMode || config.hookFeePips != _config.hookFeePips
+                || config.protocolFeeDenominator != _config.protocolFeeDenominator
+                || config.treasury != _config.treasury
+                || config.externalLiquidityDisabled != _config.externalLiquidityDisabled
+                || config.oracleConfigId != _config.oracleConfigId
+                || config.collector.code.length == 0 || config.collector == locker
+                || config.collector == address(this) || config.collector == address(manager)
+        ) revert InvalidConfiguration();
+        _validateCollectorBinding(config.collector);
+    }
+
+    function _validateCollectorBinding(address collectorAddress) private view {
+        IPoolBoundLaunchHookValidationCollectorV2 collector =
+            IPoolBoundLaunchHookValidationCollectorV2(collectorAddress);
+        address manager = address(poolManager);
+        address locker = liquidityLocker;
+        address asset0 = _asset0;
+        address asset1 = _asset1;
+        address hub = _wordAddress(_staticWord(collectorAddress, ILaunchFeeSourceV1.hub.selector));
+        address[] memory sourceAssets = collector.assets();
+        if (
+            _wordAddress(_staticWord(collectorAddress, IPoolBoundLaunchHookValidationCollectorV2.poolManager.selector)) != manager
+                || _wordAddress(_staticWord(collectorAddress, IPoolBoundLaunchHookValidationCollectorV2.locker.selector)) != locker
+                || _wordAddress(_staticWord(collectorAddress, IPoolBoundLaunchHookValidationCollectorV2.hookRoot.selector)) != address(this)
+                || _staticWord(collectorAddress, IPoolBoundLaunchHookValidationCollectorV2.poolId.selector) != boundPoolId
+                || PoolId.unwrap(collector.poolKey().toId()) != boundPoolId
+                || uint256(_staticWord(collectorAddress, IPoolBoundLaunchHookValidationCollectorV2.expectedPositionCount.selector)) != expectedPositionCount
+                || _wordAddress(_staticWord(locker, V4FeeLiquidityLockerV2.poolManager.selector)) != manager
+                || _wordAddress(_staticWord(locker, V4FeeLiquidityLockerV2.launcher.selector)) != registrar
+                || _staticPoolWord(locker, V4FeeLiquidityLockerV2.positionCount.selector) != bytes32(0)
+                || _wordBool(_staticPoolWord(locker, V4FeeLiquidityLockerV2.isSealed.selector))
+                || _staticPoolWord(locker, V4FeeLiquidityLockerV2.positionsHash.selector) != bytes32(0)
+                || _wordAddress(_staticPoolWord(locker, V4FeeLiquidityLockerV2.feeRecipient.selector)) != address(0)
+                || sourceAssets.length != 2 || sourceAssets[0] != asset0
+                || sourceAssets[1] != asset1
+                || hub.code.length == 0 || hub == address(this) || hub == collectorAddress
+                || hub == locker || hub == manager
+                || hub == asset0 || hub == asset1
+                || _config.treasury == hub || _config.treasury == collectorAddress
+        ) revert InvalidConfiguration();
+        if (
+            _wordAddress(_staticWord(hub, ILaunchFeeHubV2.launchToken.selector)) != token
+                || _wordAddress(_staticWord(hub, ILaunchFeeHubV2.configurator.selector)) != core
+                || _wordBool(_staticWord(hub, ILaunchFeeHubV2.finalized.selector))
+        ) revert InvalidConfiguration();
+        _validatePrepareContext(hub);
+    }
+
+    function _validatePrepareContext(address hub) private view {
+        ILaunchLifecycleV1 lifecycle = ILaunchLifecycleV1(core);
+        LaunchExecutionContextV1 memory context = lifecycle.executionContext();
+        address adapter = registrar;
+        address launchToken = token;
+        if (
+            context.launchId == bytes32(0) || context.operation != LaunchOperationV1.Prepare
+                || context.adapter != adapter || context.executor != adapter
+                || context.token != launchToken
+                || context.quoteAsset != Currency.unwrap(_config.quoteCurrency)
+                || context.manager != address(poolManager)
+        ) revert Unauthorized();
+        LaunchProgressV1 memory progress = lifecycle.readLaunchProgress(context.launchId);
+        if (
+            progress.launchId != context.launchId || progress.phase != LaunchPhaseV1.Preparing
+                || progress.token != launchToken || progress.feeHub != hub
+                || context.marketIndex >= progress.marketCount
+        ) revert Unauthorized();
+    }
+
     /// @dev Source terms are bound after initialize, before the first canonical mint.
     ///      Set the lifetime guard only after successful authentication of the one-shot hub terms.
     function _authenticateAuthorTerms() private {
         if (_authorTermsValidated) return;
-        validationHelper.validateAuthorTerms();
+        _validateAuthorTerms();
         _authorTermsValidated = true;
     }
 
     function _validateAuthorTerms() private view {
-        if (!_authorTermsValidated) validationHelper.validateAuthorTerms();
+        if (_authorTermsValidated) return;
+        address collector = _config.collector;
+        address hub = _wordAddress(_staticWord(collector, ILaunchFeeSourceV1.hub.selector));
+        SourceTermsV3 memory terms = ILaunchFeeHubV3(hub).sourceTerms(collector);
+        uint16 requiredBps = authorFeeBps();
+        if (
+            requiredBps > 9_999
+                || _wordAddress(_staticWord(hub, ILaunchFeeHubV2.launchToken.selector)) != token
+                || _wordAddress(_staticWord(hub, ILaunchFeeHubV2.configurator.selector)) != core
+                || terms.adapter != registrar
+                || terms.profileId == bytes32(0) || terms.termsDigest == bytes32(0)
+                || terms.beneficiary == address(0) || terms.developerFeeBps != requiredBps
+                || terms.developerFeeBps > terms.maximumDeveloperFeeBps
+        ) revert InvalidConfiguration();
     }
 
-    function _requireBoundPool(bytes32 id) private view {
+    /// @dev Share only fixed single-word getter calls. Preserve Solidity's minimum return length
+    ///      and exact revert data; address and bool results still require clean ABI words.
+    function _staticWord(address target, bytes4 selector) private view returns (bytes32 value) {
+        assembly ("memory-safe") {
+            let ptr := mload(0x40)
+            mstore(ptr, selector)
+            if iszero(staticcall(gas(), target, ptr, 4, ptr, 32)) {
+                returndatacopy(ptr, 0, returndatasize())
+                revert(ptr, returndatasize())
+            }
+            if lt(returndatasize(), 32) { revert(0, 0) }
+            value := mload(ptr)
+        }
+    }
+
+    function _staticPoolWord(address target, bytes4 selector) private view returns (bytes32 value) {
+        bytes32 id = boundPoolId;
+        assembly ("memory-safe") {
+            let ptr := mload(0x40)
+            mstore(ptr, selector)
+            mstore(add(ptr, 4), id)
+            if iszero(staticcall(gas(), target, ptr, 36, ptr, 32)) {
+                returndatacopy(ptr, 0, returndatasize())
+                revert(ptr, returndatasize())
+            }
+            if lt(returndatasize(), 32) { revert(0, 0) }
+            value := mload(ptr)
+        }
+    }
+
+    function _wordAddress(bytes32 word) private pure returns (address value) {
+        assembly ("memory-safe") {
+            if shr(160, word) { revert(0, 0) }
+            value := word
+        }
+    }
+
+    function _wordBool(bytes32 word) private pure returns (bool value) {
+        assembly ("memory-safe") {
+            if gt(word, 1) { revert(0, 0) }
+            value := word
+        }
+    }
+
+    function _requireBoundPool(bytes32 id) internal view {
         if (id != boundPoolId) revert InvalidPool();
     }
 
@@ -693,28 +711,17 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         emit LpFeesCheckpointed(boundPoolId, liquidityLocker, amount0, amount1);
     }
 
-    function _recordBeforeLiquidityChange(ModifyLiquidityParams calldata params) private {
-        if (params.liquidityDelta == 0 || block.number == _oracleState.lastBlock) return;
-        PoolId pool = PoolId.wrap(boundPoolId);
-        (, int24 spotTick,,) = StateLibrary.getSlot0(poolManager, pool);
-        if (spotTick < params.tickLower || spotTick >= params.tickUpper) return;
-        _record(spotTick, StateLibrary.getLiquidity(poolManager, pool));
-    }
+    /// @dev Core-only hooks have no observer; optional composition supplies these notifications.
+    function _onPoolRegistered(PoolConfig calldata) internal virtual {}
 
-    function _record(int24 spotTick, uint128 activeLiquidity) private {
-        OracleState storage state = _oracleState;
-        (state.index, state.cardinality) = _observations.write(
-            state.index,
-            uint32(block.timestamp),
-            state.tick,
-            activeLiquidity,
-            state.cardinality,
-            state.cardinalityNext
-        );
-        state.tick = TruncatedOracle.nextTruncatedTick(
-            state.tick, spotTick, state.maxAbsTickMove, _quoteIs0
-        );
-        state.lastBlock = uint64(block.number);
+    function _onPoolInitialized(int24) internal virtual {}
+
+    function _onBeforeLiquidityChange(ModifyLiquidityParams calldata) internal virtual {}
+
+    function _onBeforeSwap(int24, uint128) internal virtual {}
+
+    function _oracleInitializedAt() internal view virtual returns (uint256) {
+        return 0;
     }
 
     function _isFeeCurrency(

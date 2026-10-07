@@ -153,6 +153,12 @@ abstract contract PoolBoundTruncatedOracleV2 is PoolBoundLaunchHookBaseV2, ILaun
         state.tick = TruncatedOracle.normalizeTick(tick, _quoteIs0);
         state.lastBlock = uint64(block.number);
         state.initializedAt = uint64(block.timestamp);
+        uint16 requested = _initialOracleCapacity();
+        if (requested > 1) {
+            if (requested > state.cardinalityCap) requested = state.cardinalityCap;
+            // Reserve capacity only; each slot remains uninitialized until a genuine write.
+            state.cardinalityNext = requested;
+        }
     }
 
     function _onBeforeLiquidityChange(ModifyLiquidityParams calldata params) internal override {
@@ -169,6 +175,42 @@ abstract contract PoolBoundTruncatedOracleV2 is PoolBoundLaunchHookBaseV2, ILaun
 
     function _oracleInitializedAt() internal view override returns (uint256) {
         return _oracleState.initializedAt;
+    }
+
+    /// @dev Retain only the capacity a composed policy needs; preparing slots is not history.
+    function _initialOracleCapacity() internal pure virtual returns (uint16) {
+        return 1;
+    }
+
+    /// @notice Last observed normalized tick movement and its age-adjusted duration.
+    /// @dev The latest cumulative interval gives the previously held truncated tick exactly.
+    ///      Include time since the newest sample so a stale rise does not remain a high velocity.
+    function _oraclePriceMovement()
+        internal
+        view
+        returns (int256 tickChange, uint32 elapsed, uint24 maximumMove)
+    {
+        // OracleState: index[0:16], cardinality[16:32], tick[48:72], maximumMove[200:224].
+        // Observation: timestamp[0:32], signed cumulative[32:88]; one slot per ring entry.
+        // Sealed writers keep both indices inside the fixed ring. Decode only needed fields.
+        assembly ("memory-safe") {
+            let state := sload(_oracleState.slot)
+            maximumMove := and(shr(200, state), 0xffffff)
+            let cardinality := and(shr(16, state), 0xffff)
+            if gt(cardinality, 1) {
+                let index := and(state, 0xffff)
+                let latest := sload(add(_observations.slot, index))
+                let previous := sload(add(_observations.slot, mod(add(index, sub(cardinality, 1)), cardinality)))
+                let interval := and(sub(latest, previous), 0xffffffff)
+                if interval {
+                    // Signed 56-bit subtraction and uint32 age deliberately retain modular wrap.
+                    let cumulativeChange := signextend(6, sub(shr(32, latest), shr(32, previous)))
+                    let priorTick := sdiv(cumulativeChange, interval)
+                    tickChange := sub(signextend(2, shr(48, state)), priorTick)
+                    elapsed := and(sub(timestamp(), previous), 0xffffffff)
+                }
+            }
+        }
     }
 
     function _record(int24 spotTick, uint128 activeLiquidity) private {

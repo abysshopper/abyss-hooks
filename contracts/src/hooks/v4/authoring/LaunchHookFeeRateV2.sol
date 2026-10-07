@@ -6,7 +6,7 @@ import { SwapParams } from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import { ILaunchHookV1 } from "./ILaunchHookV1.sol";
 import { ILaunchHookAuthorTerms } from "./ILaunchHookAuthorTerms.sol";
 
-/// @notice Authenticated pre-swap inputs for the versioned, pure author rate seam.
+/// @notice Authenticated pre-swap inputs for the read-only author rate seam.
 /// @dev amountSpecified is the original manager request, before any specified-fee precharge.
 ///      Exact output does not disclose its eventual input amount. Pool identity is the full-key id.
 struct LaunchHookFeeContextV2 {
@@ -52,7 +52,7 @@ abstract contract LaunchHookFeeRateV2 is ILaunchHookAuthorTerms {
         SwapParams calldata params
     ) internal returns (uint24 rate) {
         if (pending.ratePlusOne != 0) revert InvalidSwapContext();
-        // Internal pure overrides can mutate memory arguments; preserve identity by value.
+        // Internal overrides can mutate memory arguments; preserve identity by value.
         bytes32 poolId = context.poolId;
         rate = _boundedRate(context);
         pending.identity = _swapIdentity(poolId, sender, params);
@@ -61,7 +61,7 @@ abstract contract LaunchHookFeeRateV2 is ILaunchHookAuthorTerms {
 
     /// @dev Shared by preview and freeze. Static always uses the configured maximum, regardless
     ///      of an unused _calculateRate override. Preserve signed-request guards even at zero fee.
-    function _boundedRate(LaunchHookFeeContextV2 memory context) internal pure returns (uint24 rate) {
+    function _boundedRate(LaunchHookFeeContextV2 memory context) internal view returns (uint24 rate) {
         if (context.amountSpecified == type(int256).min) revert FeeTooLarge();
         uint24 maximumPips = context.maximumPips;
         rate = swapFeeModel() == SwapFeeModel.Static ? maximumPips : _calculateRate(context);
@@ -105,12 +105,12 @@ abstract contract LaunchHookFeeRateV2 is ILaunchHookAuthorTerms {
         return uint256(amount < 0 ? -amount : amount);
     }
 
-    /// @notice Dynamic authors implement a deterministic pure pre-swap rate bounded by maximumPips.
-    /// @dev The default rejects an explicit Dynamic declaration without its required rate seam.
-    ///      Pure code can still revert or harm liveness; final callbacks are not a security sandbox.
+    /// @notice Dynamic authors implement a read-only pre-swap rate bounded by maximumPips.
+    /// @dev Authors may read an explicitly composed oracle; the core adds no oracle dependency.
+    ///      The default rejects Dynamic without a rate override. Inheritance is not a sandbox.
     function _calculateRate(LaunchHookFeeContextV2 memory)
         internal
-        pure
+        view
         virtual
         returns (uint24)
     {

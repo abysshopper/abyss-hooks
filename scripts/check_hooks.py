@@ -236,6 +236,7 @@ def candidate_environment(declared, selected, manifest, receipts, environment):
         "HOOK_MAX_DEVELOPER_BPS": declared["developerFeeBps"],
         "HOOK_SWAP_FEE_MODEL": SWAP_FEE_MODELS[declared["swapFeeModel"]],
         "HOOK_FORK_MANIFEST": str(manifest), "HOOK_RECEIPT_EVIDENCE": str(receipts),
+        "HOOK_ORACLE_VELOCITY_EXAMPLE": False,
     }
     for field, name in (
         ("feeModeFlags", "HOOK_FEE_MODE_FLAGS"), ("minimumTickSpacing", "HOOK_MIN_TICK_SPACING"),
@@ -243,7 +244,7 @@ def candidate_environment(declared, selected, manifest, receipts, environment):
         ("maximumOracleCardinality", "HOOK_MAX_ORACLE_CARDINALITY"),
     ):
         values[name] = declared["bounds"][field]
-    env.update({name: str(value) for name, value in values.items()})
+    env.update({name: str(value).lower() if isinstance(value, bool) else str(value) for name, value in values.items()})
     return env, values
 
 
@@ -331,6 +332,11 @@ def qualify(output, rows, *, rpc_url=None):
             )
             env["HOOK_HAS_ORACLE"] = "true" if has_oracle else "false"
             inputs["HOOK_HAS_ORACLE"] = has_oracle
+            # Economic vectors apply only to this repository's oracle-velocity reference,
+            # not arbitrary admitted dynamic policies. Feature support remains ABI-derived.
+            velocity_example = folder == ROOT / "hooks/dynamic-fee" and row["contract"] == "DynamicFeeHook"
+            env["HOOK_ORACLE_VELOCITY_EXAMPLE"] = "true" if velocity_example else "false"
+            inputs["HOOK_ORACLE_VELOCITY_EXAMPLE"] = velocity_example
             config = candidate / "external-artifact.foundry.toml"
             config.write_text(resolved_config + '\n[[profile.default.fs_permissions]]\naccess = "read-write"\npath = '
                               + json.dumps(str(candidate)) + "\n")

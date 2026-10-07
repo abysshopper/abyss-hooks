@@ -5,166 +5,139 @@ import { Test } from "forge-std/Test.sol";
 import { DynamicFeeHookRate } from "../../hooks/dynamic-fee/DynamicFeeHook.sol";
 import { LaunchHookFeeRateV2, LaunchHookFeeContextV2 } from "../src/hooks/v4/authoring/LaunchHookFeeRateV2.sol";
 import { ILaunchHookV1 } from "../src/hooks/v4/authoring/ILaunchHookV1.sol";
-import { TickMath } from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
-// Exercise the production arithmetic and final signed-request/bounds guard without a pool constructor.
+// Exercise production signal arithmetic and the final request/bounds guard without a pool constructor.
 contract DynamicFeeHookRateHarness is LaunchHookFeeRateV2 {
+    int256 private tickChange;
+    uint32 private elapsed;
+    uint24 private maximumMove;
+
+    function setSignal(int256 change, uint32 age, uint24 move) external {
+        tickChange = change;
+        elapsed = age;
+        maximumMove = move;
+    }
+
     function swapFeeModel() public pure override returns (SwapFeeModel) {
         return SwapFeeModel.Dynamic;
     }
 
-    function rate(LaunchHookFeeContextV2 memory context) external pure returns (uint24) {
+    function rate(LaunchHookFeeContextV2 memory context) external view returns (uint24) {
         return _boundedRate(context);
     }
 
-    function _calculateRate(LaunchHookFeeContextV2 memory context) internal pure override returns (uint24) {
-        return DynamicFeeHookRate.calculate(context);
+    function _calculateRate(LaunchHookFeeContextV2 memory context) internal view override returns (uint24) {
+        return DynamicFeeHookRate.calculate(context.maximumPips, tickChange, elapsed, maximumMove);
     }
 }
 
 contract DynamicFeeRateTest is Test {
-    uint160 private constant Q96 = uint160(1 << 96);
     DynamicFeeHookRateHarness private harness;
 
     function setUp() public {
         harness = new DynamicFeeHookRateHarness();
     }
 
-    function testDirectionSelectsInputVirtualReserve() public view {
-        LaunchHookFeeContextV2 memory context = _context(-600);
-        context.sqrtPriceX96 = 2 * Q96;
-        context.activeLiquidity = 1_200;
-        // At this price the input reserves are 600 token0 units and 2,400 token1 units.
-        assertEq(harness.rate(context), 6_000);
-        context.zeroForOne = false;
-        assertEq(harness.rate(context), 3_600);
+    function testAbsentHistoryAndUnavailableCapacityUseBaseline() public {
+        assertEq(harness.rate(_context(-1)), 2_000);
+        // Missing history is reported as a zero-length signal by the oracle measurement seam.
+        assertEq(_rate(100, 0, 100, 10_000), 2_000);
+        assertEq(_rate(100, 30, 0, 10_000), 2_000);
     }
 
-    function testHalfReserveMidpointAndLargeVolume() public view {
-        LaunchHookFeeContextV2 memory context = _context(-500);
-        assertEq(harness.rate(context), 4_666);
-        context.amountSpecified = -1_000;
-        assertEq(harness.rate(context), 6_000);
-        context.amountSpecified = -999_000;
-        assertEq(harness.rate(context), 9_992);
-        context.amountSpecified = -type(int256).max;
-        assertEq(harness.rate(context), 9_999);
+    function testFlatAndFallingPricesUseBaseline() public {
+        assertEq(_rate(0, 30, 100, 10_000), 2_000);
+        assertEq(_rate(-1, 30, 100, 10_000), 2_000);
+        assertEq(_rate(-100, 30, 100, 10_000), 2_000);
+        assertEq(_rate(type(int256).min, 30, 100, 10_000), 2_000);
     }
 
-    function testReserveAndUpliftFloorRatherThanRoundUp() public view {
-        LaunchHookFeeContextV2 memory context = _context(-2);
-        context.sqrtPriceX96 = 2 * Q96;
-        context.activeLiquidity = 5;
-        // Token0 reserve floors from 2.5 to 2; token1 reserve is 10.
-        assertEq(harness.rate(context), 6_000);
-        context.zeroForOne = false;
-        assertEq(harness.rate(context), 3_333);
-
-        context = _context(-1);
-        context.activeLiquidity = 3;
-        context.maximumPips = 13;
-        assertEq(harness.rate(context), 4);
-        context.amountSpecified = -3;
-        assertEq(harness.rate(context), 7);
+    function testFullAllowedMoveHasThirtySecondResponse() public {
+        assertEq(_rate(100, 29, 100, 10_000), 10_000);
+        assertEq(_rate(100, 30, 100, 10_000), 10_000);
+        assertEq(_rate(100, 31, 100, 10_000), 9_741);
+        assertEq(_rate(100, 60, 100, 10_000), 6_000);
     }
 
-    function testZeroInputAndSmallMaximumBaselineFloor() public view {
-        LaunchHookFeeContextV2 memory context = _context(0);
-        assertEq(harness.rate(context), 2_000);
-        context.maximumPips = 13;
-        assertEq(harness.rate(context), 2);
-        context.maximumPips = 4;
-        assertEq(harness.rate(context), 0);
-        context.activeLiquidity = 1;
-        context.amountSpecified = -1;
-        assertEq(harness.rate(context), 2);
+    function testFasterUpwardMovementRaisesRate() public {
+        assertEq(_rate(25, 30, 100, 10_000), 4_000);
+        assertEq(_rate(50, 30, 100, 10_000), 6_000);
+        assertEq(_rate(75, 30, 100, 10_000), 8_000);
+        assertEq(_rate(100, 30, 100, 10_000), 10_000);
+        // Equal movement at half the speed produces only half the uplift above baseline.
+        assertEq(_rate(50, 60, 100, 10_000), 4_000);
+        assertEq(_rate(100, 120, 100, 10_000), 4_000);
     }
 
-    function testZeroMaximumTakesPrecedenceOverFallbacks() public view {
-        LaunchHookFeeContextV2 memory context = _context(-1_000);
-        context.maximumPips = 0;
-        assertEq(harness.rate(context), 0);
-        context.amountSpecified = type(int256).max;
-        assertEq(harness.rate(context), 0);
-        context.amountSpecified = -1;
-        context.activeLiquidity = 0;
-        assertEq(harness.rate(context), 0);
-        context.activeLiquidity = 1;
-        context.sqrtPriceX96 = 0;
-        assertEq(harness.rate(context), 0);
-        context.sqrtPriceX96 = 2 * Q96;
-        assertEq(harness.rate(context), 0);
+    function testIdleAgeDecaysRateWithoutNewMovement() public {
+        assertEq(_rate(100, 30, 100, 10_000), 10_000);
+        assertEq(_rate(100, 60, 100, 10_000), 6_000);
+        assertEq(_rate(100, 120, 100, 10_000), 4_000);
+        assertEq(_rate(100, type(uint32).max, 100, 10_000), 2_000);
     }
 
-    function testConservativeFallbacksInBothDirections() public view {
-        for (uint256 direction; direction < 2; ++direction) {
-            LaunchHookFeeContextV2 memory context = _context(1);
-            context.zeroForOne = direction == 0;
-            assertEq(harness.rate(context), 10_000);
-            context.amountSpecified = type(int256).max;
-            assertEq(harness.rate(context), 10_000);
-
-            context.amountSpecified = -1;
-            context.activeLiquidity = 0;
-            assertEq(harness.rate(context), 10_000);
-            context.activeLiquidity = 1_000;
-            context.sqrtPriceX96 = 0;
-            assertEq(harness.rate(context), 10_000);
-
-            // A positive liquidity and price can still floor the directional reserve to zero.
-            context.activeLiquidity = 1;
-            context.sqrtPriceX96 = direction == 0 ? 2 * Q96 : Q96 / 2;
-            assertEq(harness.rate(context), 10_000);
-            context.amountSpecified = 0;
-            assertEq(harness.rate(context), 10_000);
-        }
+    function testBaselineAndUpliftFloorForSmallMaximum() public {
+        assertEq(_rate(0, 30, 3, 13), 2);
+        assertEq(_rate(1, 30, 3, 13), 5);
+        assertEq(_rate(2, 30, 3, 13), 9);
+        assertEq(_rate(3, 30, 3, 13), 13);
+        assertEq(_rate(0, 30, 3, 4), 0);
+        assertEq(_rate(1, 30, 3, 4), 1);
+        assertEq(_rate(1, 30, 3, 1), 0);
+        assertEq(_rate(3, 30, 3, 1), 1);
     }
 
-    function testMonotonicityAndBoundsAcrossSignedRequestLimits() public view {
-        uint24[7] memory maxima = [uint24(0), 1, 4, 5, 13, 10_000, 999_999];
-        int256[10] memory requests = [
-            int256(0), -1, -2, -499, -500, -999, -1_000, -999_000,
-            -int256(type(int128).max), -type(int256).max
-        ];
+    function testSaturationThresholdRoundsUp() public {
+        // Capacity 3,100 requires ceil(3,100 / 30) = 104 ticks, not 103.
+        assertEq(_rate(103, 31, 100, 10_000), 9_974);
+        assertEq(_rate(104, 31, 100, 10_000), 10_000);
+        assertEq(_rate(105, 31, 100, 10_000), 10_000);
+        assertEq(_rate(1, 1, 1, 10_000), 10_000);
+    }
+
+    function testExtremeSignalsSaturateBeforeMultiplication() public {
+        uint24 maximum = type(uint24).max;
+        uint32 age = type(uint32).max;
+        uint24 move = type(uint24).max;
+        assertEq(_rate(type(int256).max, age, move, maximum), maximum);
+        assertEq(_rate(type(int256).min, age, move, maximum), maximum / 5);
+        assertEq(_rate(1, age, move, maximum), maximum / 5);
+
+        uint256 capacity = uint256(move) * age;
+        int256 threshold = int256((capacity + 29) / 30);
+        assertEq(_rate(threshold - 1, age, move, maximum), maximum - 1);
+        assertEq(_rate(threshold, age, move, maximum), maximum);
+        assertEq(_rate(threshold + 1, age, move, maximum), maximum);
+    }
+
+    function testZeroMaximumUsesZeroAcrossSignalExtremes() public {
+        assertEq(_rate(type(int256).max, type(uint32).max, type(uint24).max, 0), 0);
+        assertEq(_rate(type(int256).min, type(uint32).max, type(uint24).max, 0), 0);
+        assertEq(_rate(0, 0, 0, 0), 0);
+    }
+
+    function testRateIsIndependentOfRequestDirectionSizeModeAndPoolReserves() public {
+        harness.setSignal(50, 30, 100);
+        int256[5] memory requests = [-type(int256).max, int256(-1), 0, 1, type(int256).max];
         for (uint256 mode; mode < 2; ++mode) {
             for (uint256 direction; direction < 2; ++direction) {
-                for (uint256 m; m < maxima.length; ++m) {
+                for (uint256 reserves; reserves < 2; ++reserves) {
                     LaunchHookFeeContextV2 memory context = _context(0);
-                    context.maximumPips = maxima[m];
                     context.feeMode = ILaunchHookV1.FeeMode(mode);
                     context.zeroForOne = direction == 0;
-                    context.sqrtPriceX96 = 2 * Q96;
-                    context.activeLiquidity = 1_200;
-                    uint24 previous;
+                    context.activeLiquidity = reserves == 0 ? 0 : type(uint128).max;
+                    context.sqrtPriceX96 = reserves == 0 ? 0 : type(uint160).max;
                     for (uint256 i; i < requests.length; ++i) {
                         context.amountSpecified = requests[i];
-                        uint24 current = harness.rate(context);
-                        assertGe(current, previous);
-                        assertLe(current, maxima[m]);
-                        previous = current;
+                        assertEq(harness.rate(context), 6_000);
                     }
-                    assertEq(previous, maxima[m] == 0 ? 0 : maxima[m] - 1);
-                    context.amountSpecified = type(int256).max;
-                    assertEq(harness.rate(context), maxima[m]);
                 }
             }
         }
     }
 
-    function testExtremePricesLiquidityAndInputUseFullPrecision() public view {
-        for (uint256 direction; direction < 2; ++direction) {
-            LaunchHookFeeContextV2 memory context = _context(-1);
-            context.zeroForOne = direction == 0;
-            context.activeLiquidity = type(uint128).max;
-            context.sqrtPriceX96 = direction == 0 ? TickMath.MIN_SQRT_PRICE : TickMath.MAX_SQRT_PRICE - 1;
-            assertEq(harness.rate(context), 2_000);
-            // Reserve and input remain addable; intermediate products need full precision.
-            context.amountSpecified = -type(int256).max;
-            assertEq(harness.rate(context), 9_999);
-        }
-    }
-
     function testSignedMinimumIsRejectedEvenWithZeroMaximum() public {
+        harness.setSignal(type(int256).max, 1, 1);
         LaunchHookFeeContextV2 memory context = _context(type(int256).min);
         vm.expectRevert(LaunchHookFeeRateV2.FeeTooLarge.selector);
         harness.rate(context);
@@ -173,8 +146,24 @@ contract DynamicFeeRateTest is Test {
         harness.rate(context);
     }
 
+    function testFuzzRateStaysBetweenBaselineAndMaximum(
+        int256 change, uint32 age, uint24 move, uint24 maximum
+    ) public {
+        uint24 rate = _rate(change, age, move, maximum);
+        assertGe(rate, maximum / 5);
+        assertLe(rate, maximum);
+        if (change <= 0 || age == 0 || move == 0) assertEq(rate, maximum / 5);
+    }
+
+    function _rate(int256 change, uint32 age, uint24 move, uint24 maximum) private returns (uint24) {
+        harness.setSignal(change, age, move);
+        LaunchHookFeeContextV2 memory context = _context(-1);
+        context.maximumPips = maximum;
+        return harness.rate(context);
+    }
+
     function _context(int256 amountSpecified) private pure returns (LaunchHookFeeContextV2 memory context) {
-        context.sqrtPriceX96 = Q96;
+        context.sqrtPriceX96 = uint160(1 << 96);
         context.activeLiquidity = 1_000;
         context.amountSpecified = amountSpecified;
         context.zeroForOne = true;

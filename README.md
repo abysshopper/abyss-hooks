@@ -12,7 +12,7 @@ Contribute pool-bound Uniswap V4 fee hooks to Black Market.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for hook requirements and developer royalty terms.
 
-The shared base is oracle-free. Hooks needing price history can opt into the [abstract truncated-oracle template](CONTRIBUTING.md#optional-truncated-oracle); it compiles into the same submitted hook, not another deployment.
+The shared base is oracle-free. The dynamic example opts into the [abstract truncated-oracle template](CONTRIBUTING.md#optional-truncated-oracle) to raise fees on faster observed price rises; it compiles into the same submitted hook, not another deployment.
 
 ## Run the checks
 

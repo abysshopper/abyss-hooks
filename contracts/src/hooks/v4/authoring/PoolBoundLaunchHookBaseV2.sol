@@ -41,7 +41,7 @@ interface IPoolBoundLaunchHookValidationCollectorV2 is ILaunchFeeSourceV1 {
     function expectedPositionCount() external view returns (uint256);
 }
 
-/// @notice Versioned one-market scalar accounting with an authenticated frozen pure rate seam.
+/// @notice Versioned one-market scalar accounting with an authenticated frozen read-only rate seam.
 /// @dev The constructor tuple and full-key V2 collector/locker ABI stay unchanged.
 ///      Final callbacks, custody, full-fill, LP checkpoint and payment guards are nonvirtual.
 ///      Registration and author-payment checks run directly against the frozen core fields.
@@ -392,7 +392,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         (LaunchHookFeeContextV2 memory context, int24 spotTick) = _swapRateContext(params);
         uint128 activeLiquidity = context.activeLiquidity;
         rate = _freezeRate(_pendingSwapFee, context, sender, params);
-        // The pure seam may mutate memory; observers receive the authenticated value snapshot.
+        // The read-only seam may mutate memory; observers receive the authenticated value snapshot.
         _onBeforeSwap(spotTick, activeLiquidity);
     }
 
@@ -547,20 +547,18 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
     }
 
     function _validateCollectorBinding(address collectorAddress) private view {
-        IPoolBoundLaunchHookValidationCollectorV2 collector =
-            IPoolBoundLaunchHookValidationCollectorV2(collectorAddress);
         address manager = address(poolManager);
         address locker = liquidityLocker;
         address asset0 = _asset0;
         address asset1 = _asset1;
         address hub = _wordAddress(_staticWord(collectorAddress, ILaunchFeeSourceV1.hub.selector));
-        address[] memory sourceAssets = collector.assets();
+        bool sourceAssetsMatch = _staticAssetsMatch(collectorAddress, asset0, asset1);
         if (
             _wordAddress(_staticWord(collectorAddress, IPoolBoundLaunchHookValidationCollectorV2.poolManager.selector)) != manager
                 || _wordAddress(_staticWord(collectorAddress, IPoolBoundLaunchHookValidationCollectorV2.locker.selector)) != locker
                 || _wordAddress(_staticWord(collectorAddress, IPoolBoundLaunchHookValidationCollectorV2.hookRoot.selector)) != address(this)
                 || _staticWord(collectorAddress, IPoolBoundLaunchHookValidationCollectorV2.poolId.selector) != boundPoolId
-                || PoolId.unwrap(collector.poolKey().toId()) != boundPoolId
+                || _staticPoolKeyHash(collectorAddress) != boundPoolId
                 || uint256(_staticWord(collectorAddress, IPoolBoundLaunchHookValidationCollectorV2.expectedPositionCount.selector)) != expectedPositionCount
                 || _wordAddress(_staticWord(locker, V4FeeLiquidityLockerV2.poolManager.selector)) != manager
                 || _wordAddress(_staticWord(locker, V4FeeLiquidityLockerV2.launcher.selector)) != registrar
@@ -568,8 +566,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
                 || _wordBool(_staticPoolWord(locker, V4FeeLiquidityLockerV2.isSealed.selector))
                 || _staticPoolWord(locker, V4FeeLiquidityLockerV2.positionsHash.selector) != bytes32(0)
                 || _wordAddress(_staticPoolWord(locker, V4FeeLiquidityLockerV2.feeRecipient.selector)) != address(0)
-                || sourceAssets.length != 2 || sourceAssets[0] != asset0
-                || sourceAssets[1] != asset1
+                || !sourceAssetsMatch
                 || hub.code.length == 0 || hub == address(this) || hub == collectorAddress
                 || hub == locker || hub == manager
                 || hub == asset0 || hub == asset1
@@ -628,33 +625,71 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         ) revert InvalidConfiguration();
     }
 
-    /// @dev Share only fixed single-word getter calls. Preserve Solidity's minimum return length
-    ///      and exact revert data; address and bool results still require clean ABI words.
-    function _staticWord(address target, bytes4 selector) private view returns (bytes32 value) {
+    /// @dev Retain the dynamic ABI offset and bounds rules without allocating the returned array.
+    ///      Full-word equality against clean frozen addresses also rejects dirty address words.
+    function _staticAssetsMatch(address target, address asset0, address asset1)
+        private
+        view
+        returns (bool matches)
+    {
+        uint256 ptr = _staticGetter(target, ILaunchFeeSourceV1.assets.selector, bytes32(0), 4, 32);
+        uint256 expected0 = uint160(asset0);
+        uint256 expected1 = uint160(asset1);
         assembly ("memory-safe") {
-            let ptr := mload(0x40)
-            mstore(ptr, selector)
-            if iszero(staticcall(gas(), target, ptr, 4, ptr, 32)) {
-                returndatacopy(ptr, 0, returndatasize())
-                revert(ptr, returndatasize())
+            let size := returndatasize()
+            let offset := mload(ptr)
+            if or(gt(offset, 0xffffffffffffffff), gt(offset, sub(size, 32))) { revert(0, 0) }
+            returndatacopy(ptr, offset, 32)
+            let length := mload(ptr)
+            if or(
+                gt(length, 0xffffffffffffffff),
+                gt(length, div(sub(sub(size, offset), 32), 32))
+            ) { revert(0, 0) }
+            if eq(length, 2) {
+                returndatacopy(ptr, add(offset, 32), 64)
+                matches := and(eq(mload(ptr), expected0), eq(mload(add(ptr, 32)), expected1))
             }
-            if lt(returndatasize(), 32) { revert(0, 0) }
+        }
+    }
+
+    /// @dev Equality with the frozen canonical full-key hash also rejects dirty address/fee/tick words.
+    function _staticPoolKeyHash(address target) private view returns (bytes32 value) {
+        uint256 ptr = _staticGetter(
+            target, IPoolBoundLaunchHookValidationCollectorV2.poolKey.selector, bytes32(0), 4, 160
+        );
+        assembly ("memory-safe") {
+            value := keccak256(ptr, 160)
+        }
+    }
+
+    function _staticWord(address target, bytes4 selector) private view returns (bytes32 value) {
+        uint256 ptr = _staticGetter(target, selector, bytes32(0), 4, 32);
+        assembly ("memory-safe") {
             value := mload(ptr)
         }
     }
 
     function _staticPoolWord(address target, bytes4 selector) private view returns (bytes32 value) {
-        bytes32 id = boundPoolId;
+        uint256 ptr = _staticGetter(target, selector, boundPoolId, 36, 32);
         assembly ("memory-safe") {
-            let ptr := mload(0x40)
+            value := mload(ptr)
+        }
+    }
+
+    /// @dev Borrow scratch memory consumed immediately by the fixed-layout getter callers.
+    ///      Preserve minimum return length, trailing data acceptance and exact target reverts.
+    function _staticGetter(
+        address target, bytes4 selector, bytes32 argument, uint256 inputSize, uint256 outputSize
+    ) private view returns (uint256 ptr) {
+        assembly ("memory-safe") {
+            ptr := mload(0x40)
             mstore(ptr, selector)
-            mstore(add(ptr, 4), id)
-            if iszero(staticcall(gas(), target, ptr, 36, ptr, 32)) {
+            if eq(inputSize, 36) { mstore(add(ptr, 4), argument) }
+            if iszero(staticcall(gas(), target, ptr, inputSize, ptr, outputSize)) {
                 returndatacopy(ptr, 0, returndatasize())
                 revert(ptr, returndatasize())
             }
-            if lt(returndatasize(), 32) { revert(0, 0) }
-            value := mload(ptr)
+            if lt(returndatasize(), outputSize) { revert(0, 0) }
         }
     }
 

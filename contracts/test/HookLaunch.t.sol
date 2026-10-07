@@ -13,6 +13,7 @@ import { TickMath } from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import { StateLibrary } from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import { Position } from "@uniswap/v4-core/src/libraries/Position.sol";
 import { FullMath } from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import { SqrtPriceMath } from "@uniswap/v4-core/src/libraries/SqrtPriceMath.sol";
 import { IAbyssLaunchFactory } from "../src/interfaces/IAbyssLaunch.sol";
 import { LaunchOrchestratorV1, LaunchImplementationRegistryV2, PoolMarketAdapterV1, PoolFeeCollectorFactoryV1, V4FeeCollectorV2 } from "../src/interfaces/IForkLaunch.sol";
 import { PoolHookDeployerV1 } from "../src/hooks/v4/authoring/PoolHookDeployerV1.sol";
@@ -202,6 +203,57 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         _assertHookFeeBacking(manager, key);
     }
 
+    function testDynamicExampleTracksObservedPriceVelocity() public {
+        vm.skip(!vm.envOr("HOOK_ORACLE_VELOCITY_EXAMPLE", false));
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        Receipts memory received = _scenario(mode, 1_200_001);
+        PoolKey memory key = ILaunchHookV1(received.hook).poolKey(received.poolId);
+        bool sellBase = Currency.unwrap(key.currency0) == received.token;
+        SwapParams memory preview = SwapParams(sellBase, -int256(1 ether),
+            sellBase ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
+        uint24 fastRate = IHookFeeRatePreviewFork(received.hook).feeRate(preview);
+        assertGt(fastRate, 2_000, "observed upward movement raises fees above baseline");
+        vm.warp(block.timestamp + 120);
+        uint24 idleRate = IHookFeeRatePreviewFork(received.hook).feeRate(preview);
+        assertLt(idleRate, fastRate, "without new movement the historical rise must fade");
+        assertGe(idleRate, 2_000);
+        emit log_named_uint("fast upward oracle rate", fastRate);
+        emit log_named_uint("idle oracle rate", idleRate);
+
+        // Sell enough base to move the real spot below the lagged truncated tick, but stay
+        // inside the funded range. The next swap observes that fall, not its own price impact.
+        _sellBelowOracle(key, received.poolId, sellBase);
+        for (uint256 i; i < 5; ++i) _trade(key, sellBase, -int256(1e12));
+        assertEq(IHookFeeRatePreviewFork(received.hook).feeRate(preview), 2_000,
+            "falling then flat observed prices use baseline");
+        emit log_named_uint("falling and flat oracle rate", 2_000);
+    }
+
+    function _sellBelowOracle(PoolKey memory key, bytes32 id, bool sellBase) private {
+        (,,, int24 normalizedTick,,,,) = ILaunchHookOracleV1(address(key.hooks)).oracleState(id);
+        assertGt(normalizedTick, 1);
+        int24 targetTick = sellBase ? normalizedTick / 2 : -(normalizedTick / 2);
+        (uint160 currentPrice,,,) = StateLibrary.getSlot0(manager, key.toId());
+        uint160 targetPrice = TickMath.getSqrtPriceAtTick(targetTick);
+        uint128 liquidity = StateLibrary.getLiquidity(manager, key.toId());
+        uint256 netInput = sellBase
+            ? SqrtPriceMath.getAmount0Delta(targetPrice, currentPrice, liquidity, true)
+            : SqrtPriceMath.getAmount1Delta(currentPrice, targetPrice, liquidity, true);
+        // Every _trade advances twelve seconds before taking its frozen rate snapshot.
+        vm.warp(block.timestamp + 12);
+        SwapParams memory preview = SwapParams(sellBase, -int256(netInput),
+            sellBase ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
+        uint24 rate = IHookFeeRatePreviewFork(address(key.hooks)).feeRate(preview);
+        vm.warp(block.timestamp - 12);
+        uint256 grossInput = netInput;
+        if (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1 != 0) {
+            grossInput = FullMath.mulDivRoundingUp(netInput, 1_000_000, 1_000_000 - rate);
+        }
+        _trade(key, sellBase, -int256(grossInput));
+        (, int24 actualTick,,) = StateLibrary.getSlot0(manager, key.toId());
+        assertLt(sellBase ? actualTick : -actualTick, normalizedTick);
+    }
+
     function testOptionalOracleComposition() public {
         uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
         Receipts memory received = _scenarioWithFees(mode, 700_001, 10_000);
@@ -251,6 +303,89 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         (PoolBoundHookParametersV1 memory parameters, bytes32 salt) =
             adapter.collectorFactory().poolBoundHookParameters(address(adapter), core.predictToken(plan), plan.markets[0]);
         return deployer.deploy(parameters, salt);
+    }
+
+    function testRegistrationAcceptsStructuredGetterLayouts() public {
+        for (uint256 scenario; scenario < 4; ++scenario) _probeCollectorGetter(scenario);
+    }
+
+    function testRegistrationRejectsMalformedStructuredGetters() public {
+        for (uint256 scenario = 4; scenario < 23; ++scenario) _probeCollectorGetter(scenario);
+    }
+
+    function testRegistrationBubblesStructuredGetterReverts() public {
+        _probeCollectorGetter(23);
+        _probeCollectorGetter(24);
+    }
+
+    function _probeCollectorGetter(uint256 scenario) private {
+        uint256 snapshot = vm.snapshotState();
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        LaunchPlanV1 memory plan = _planWithFees(mode, 1_300_001 + scenario, developerBps, 10_000);
+        PoolBoundLaunchHookBaseV2 hook = _predeployPlannedHook(plan);
+        PoolKey memory key = hook.poolKey(hook.boundPoolId());
+        vm.prank(creator);
+        bytes32 launchId = core.beginLaunch(plan, LaunchModeV1.Staged).launchId;
+        address creatorContract = _address("collectorDeployer");
+        address collector = vm.computeCreateAddress(creatorContract, vm.getNonce(creatorContract));
+        (bytes4 selector, bytes memory response) = _collectorGetterResponse(key, scenario);
+        if (scenario >= 23) vm.mockCallRevert(collector, abi.encodePacked(selector), response);
+        else vm.mockCall(collector, abi.encodePacked(selector), response);
+        // mockCall installs code on empty targets. Remove that stub so the real canonical
+        // deployer still CREATEs the collector; only its selected return envelope is mocked.
+        vm.etch(collector, "");
+        vm.prank(creator);
+        if (scenario >= 23) vm.expectRevert(response);
+        else if (scenario >= 4) vm.expectRevert();
+        core.prepareMarkets(plan, 0, 1);
+        assertEq(hook.registered(hook.boundPoolId()), scenario < 4);
+        assertEq(core.readLaunchProgress(launchId).preparedMarkets, scenario < 4 ? 1 : 0);
+        if (scenario < 4) assertGt(collector.code.length, 0, "actual collector must be deployed");
+        vm.clearMockedCalls();
+        require(vm.revertToStateAndDelete(snapshot), "restore isolated structured ABI scenario");
+    }
+
+    function _collectorGetterResponse(PoolKey memory key, uint256 scenario)
+        private pure returns (bytes4 selector, bytes memory response)
+    {
+        selector = bytes4(keccak256("assets()"));
+        address asset0 = Currency.unwrap(key.currency0);
+        address asset1 = Currency.unwrap(key.currency1);
+        if (scenario == 0 || (scenario >= 13 && scenario <= 19) || scenario == 23) {
+            selector = bytes4(keccak256("poolKey()"));
+            response = abi.encode(key);
+            if (scenario == 0) return (selector, bytes.concat(response, abi.encode(uint256(123))));
+            if (scenario == 13) return (selector, new bytes(0));
+            if (scenario == 14) return (selector, new bytes(159));
+            if (scenario == 15) response[0] = 0x01;
+            if (scenario == 16) response[64] = 0x01;
+            if (scenario == 17) response[96] = 0x01;
+            if (scenario == 18) response[128] = 0x01;
+            if (scenario == 19) response[159] ^= 0x01;
+            if (scenario == 23) response = abi.encodeWithSignature("GetterRejected(uint256)", scenario);
+            return (selector, response);
+        }
+        if (scenario == 24) return (selector, abi.encodeWithSignature("GetterRejected(uint256)", scenario));
+        if (scenario == 4) return (selector, new bytes(0));
+        if (scenario == 5) return (selector, new bytes(31));
+        if (scenario == 6) return (selector, bytes.concat(abi.encode(uint256(32)), new bytes(31)));
+        uint256 offset = scenario == 2 ? 33 : scenario == 3 ? 96 : 32;
+        uint256 count = scenario == 11 ? 3 : scenario == 20 ? 0 : scenario == 21 ? 1 : 2;
+        response = new bytes(offset + 32 + count * 32 + (scenario == 3 ? 32 : 0));
+        assembly ("memory-safe") {
+            let data := add(response, 32)
+            mstore(data, offset)
+            mstore(add(data, offset), count)
+            if count { mstore(add(add(data, offset), 32), asset0) }
+            if gt(count, 1) { mstore(add(add(data, offset), 64), asset1) }
+            if gt(count, 2) { mstore(add(add(data, offset), 96), asset0) }
+        }
+        if (scenario == 7) assembly ("memory-safe") { mstore(response, 127) }
+        if (scenario == 8) assembly ("memory-safe") { mstore(add(response, 32), 160) }
+        if (scenario == 9) assembly ("memory-safe") { mstore(add(response, 32), shl(64, 1)) }
+        if (scenario == 10) assembly ("memory-safe") { mstore(add(response, 64), shl(64, 1)) }
+        if (scenario == 12) response[64] = 0x01;
+        if (scenario == 22) response[127] ^= 0x01;
     }
 
     function testRegistrationRejectsMalformedGetterWords() public {
@@ -501,16 +636,17 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         (uint16 index, uint16 cardinality, uint16 next,,,,, uint16 cap) = oracle.oracleState(id);
         assertEq(index, 0);
         assertEq(cardinality, 1, "initialization must not fabricate history");
-        assertEq(next, 1);
         (uint32 timestamp, int56 ticks, uint160 liquidity, bool initialized) = oracle.observations(id, 0);
         assertEq(timestamp, uint32(genesis));
         assertEq(ticks, 0);
         assertEq(liquidity, 0);
         assertTrue(initialized);
-        oracle.increaseObservationCardinalityNext(id, 3);
-        (, cardinality, next,,,,,) = oracle.oracleState(id);
-        assertEq(cardinality, 1, "prepared capacity is not populated history");
-        assertEq(next, cap < 3 ? cap : 3);
+        if (!vm.envOr("HOOK_ORACLE_VELOCITY_EXAMPLE", false)) {
+            oracle.increaseObservationCardinalityNext(id, 3);
+            (, cardinality, next,,,,,) = oracle.oracleState(id);
+            assertEq(cardinality, 1, "prepared capacity is not populated history");
+            assertEq(next, cap < 3 ? cap : 3);
+        }
     }
 
     function _oracleBeforeSwap(PoolKey memory key) private view returns (OracleBefore memory snapshot) {

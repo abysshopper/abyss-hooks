@@ -17,11 +17,11 @@ import { ModifyLiquidityParams, SwapParams } from "@uniswap/v4-core/src/types/Po
 import { IAbyssLaunchFactory } from "../../../interfaces/IAbyssLaunch.sol";
 import { ILaunchFeeSourceV1 } from "../../../launch/fees/v1/ILaunchFeeSourceV1.sol";
 import { ILaunchFeeHubV2 } from "../../../launch/fees/v2/ILaunchFeeHubV2.sol";
-import { ILaunchFeeHubV3, SourceTermsV3 } from "../../../launch/fees/v3/ILaunchFeeHubV3.sol";
+import { ILaunchFeeHubV3 } from "../../../launch/fees/v3/ILaunchFeeHubV3.sol";
 import { V4FeeLiquidityLockerV2 } from "../../../launch/fees/v2/V4FeeLiquidityLockerV2.sol";
 import { ILaunchLifecycleV1 } from "../../../launch/lifecycle/v1/ILaunchLifecycleV1.sol";
-import { LaunchExecutionContextV1, LaunchProgressV1, LaunchOperationV1, LaunchPhaseV1 } from "../../../launch/lifecycle/v1/LaunchTypesV1.sol";
-import { PoolBoundHookParametersV1 } from "../PoolBoundHookParametersV1.sol";
+import { LaunchOperationV1, LaunchPhaseV1, LaunchModeV1 } from "../../../launch/lifecycle/v1/LaunchTypesV1.sol";
+import { PoolBoundHookParametersV2 } from "../PoolBoundHookParametersV2.sol";
 import { V4HookFlags } from "../V4HookFlags.sol";
 import { ILaunchHookV1 } from "./ILaunchHookV1.sol";
 
@@ -42,7 +42,7 @@ interface IPoolBoundLaunchHookValidationCollectorV2 is ILaunchFeeSourceV1 {
 }
 
 /// @notice Versioned one-market scalar accounting with an authenticated frozen read-only rate seam.
-/// @dev The constructor tuple and full-key V2 collector/locker ABI stay unchanged.
+/// @dev V2 constructor economics bind creator fee settings; the full-key collector/locker ABI is unchanged.
 ///      Final callbacks, custody, full-fill, LP checkpoint and payment guards are nonvirtual.
 ///      Registration and author-payment checks run directly against the frozen core fields.
 ///      Inheritance is not a sandbox: added selectors, assembly and the full artifact need review.
@@ -89,6 +89,8 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
     bytes32 public immutable marketCommitment;
     uint160 public immutable openingSqrtPriceX96;
     uint32 public immutable expectedPositionCount;
+    /// @dev Immutable creator policy: minimum pips[0:24], sensitivity[24:56].
+    uint256 private immutable _creatorFeePolicy;
     address private immutable _asset0;
     address private immutable _asset1;
 
@@ -117,7 +119,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         bytes32 indexed poolId, address indexed locker, uint256 amount0, uint256 amount1
     );
 
-    constructor(PoolBoundHookParametersV1 memory parameters) {
+    constructor(PoolBoundHookParametersV2 memory parameters) {
         _validateConstructor(parameters);
         if (!V4HookFlags.hasSharedLaunchV2Permissions(address(this))) revert InvalidHookAddress();
         poolManager = IPoolManager(parameters.poolManager);
@@ -130,6 +132,8 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         marketCommitment = parameters.marketCommitment;
         openingSqrtPriceX96 = parameters.sqrtPriceX96;
         expectedPositionCount = parameters.expectedPositionCount;
+        _creatorFeePolicy = uint256(parameters.minimumHookFeePips)
+            | (uint256(parameters.feeSensitivityPipsSecondsPerTick) << 24);
 
         bool quoteIs0 = parameters.quoteCurrency < parameters.token;
         address asset0 = quoteIs0 ? parameters.quoteCurrency : parameters.token;
@@ -167,6 +171,14 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
     modifier nonFeeReentrant() {
         if (_feeCheckpointActive) revert Reentrancy();
         _;
+    }
+
+    function minimumHookFeePips() public view returns (uint24) {
+        return uint24(_creatorFeePolicy);
+    }
+
+    function feeSensitivityPipsSecondsPerTick() public view returns (uint32) {
+        return uint32(_creatorFeePolicy >> 24);
     }
 
     function pools() external view override returns (bytes32[] memory ids) {
@@ -405,6 +417,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee,) = StateLibrary.getSlot0(poolManager, pool);
         if (protocolFee != 0) revert InvalidConfiguration();
         spotTick = tick;
+        uint256 creatorFeePolicy = _creatorFeePolicy;
         context = LaunchHookFeeContextV2({
             poolId: boundPoolId,
             sqrtPriceX96: sqrtPriceX96,
@@ -412,6 +425,8 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
             amountSpecified: params.amountSpecified,
             zeroForOne: params.zeroForOne,
             maximumPips: _config.hookFeePips,
+            minimumPips: uint24(creatorFeePolicy),
+            feeSensitivityPipsSecondsPerTick: uint32(creatorFeePolicy >> 24),
             feeMode: _config.feeMode
         });
     }
@@ -486,7 +501,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         return abi.encode(amount0, amount1);
     }
 
-    function _validateConstructor(PoolBoundHookParametersV1 memory parameters) private view {
+    function _validateConstructor(PoolBoundHookParametersV2 memory parameters) private view {
         if (
             parameters.poolManager.code.length == 0 || parameters.registrar.code.length == 0
                 || parameters.oracleFactory.code.length == 0 || parameters.core.code.length == 0
@@ -504,6 +519,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
                 || parameters.sqrtPriceX96 < TickMath.MIN_SQRT_PRICE
                 || parameters.sqrtPriceX96 >= TickMath.MAX_SQRT_PRICE
                 || parameters.hookFeePips > PIPS_DENOMINATOR
+                || parameters.minimumHookFeePips > parameters.hookFeePips
                 || parameters.feeMode > uint8(FeeMode.QuoteOnly)
                 || (parameters.protocolFeeDenominator != 0
                     && (parameters.protocolFeeDenominator < 4
@@ -581,22 +597,63 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
     }
 
     function _validatePrepareContext(address hub) private view {
-        ILaunchLifecycleV1 lifecycle = ILaunchLifecycleV1(core);
-        LaunchExecutionContextV1 memory context = lifecycle.executionContext();
+        address lifecycle = core;
+        uint256 ptr = _staticGetter(
+            lifecycle, ILaunchLifecycleV1.executionContext.selector, bytes32(0), 4, 352
+        );
+        {
+            uint256 maxOperation = uint256(type(LaunchOperationV1).max);
+            // Eleven static ABI words; validate even the custody/recipient fields not compared below.
+            assembly ("memory-safe") {
+                if or(shr(32, mload(add(ptr, 0x20))), gt(mload(add(ptr, 0x40)), maxOperation)) {
+                    revert(0, 0)
+                }
+                let end := add(ptr, 0x140)
+                for { let cursor := add(ptr, 0x60) } lt(cursor, end) { cursor := add(cursor, 0x20) } {
+                    if shr(160, mload(cursor)) { revert(0, 0) }
+                }
+            }
+        }
         address adapter = registrar;
         address launchToken = token;
+        bytes32 launchId = _wordAt(ptr, 0);
         if (
-            context.launchId == bytes32(0) || context.operation != LaunchOperationV1.Prepare
-                || context.adapter != adapter || context.executor != adapter
-                || context.token != launchToken
-                || context.quoteAsset != Currency.unwrap(_config.quoteCurrency)
-                || context.manager != address(poolManager)
+            launchId == bytes32(0) || uint256(_wordAt(ptr, 0x40)) != uint256(LaunchOperationV1.Prepare)
+                || _wordAt(ptr, 0x60) != bytes32(uint256(uint160(adapter)))
+                || _wordAt(ptr, 0x80) != bytes32(uint256(uint160(adapter)))
+                || _wordAt(ptr, 0xa0) != bytes32(uint256(uint160(launchToken)))
+                || _wordAt(ptr, 0xc0) != bytes32(uint256(uint160(Currency.unwrap(_config.quoteCurrency))))
+                || _wordAt(ptr, 0xe0) != bytes32(uint256(uint160(address(poolManager))))
         ) revert Unauthorized();
-        LaunchProgressV1 memory progress = lifecycle.readLaunchProgress(context.launchId);
+        // Snapshot the index before the next getter reuses the context scratch buffer.
+        uint32 marketIndex = uint32(uint256(_wordAt(ptr, 0x20)));
+        ptr = _staticGetter(
+            lifecycle, ILaunchLifecycleV1.readLaunchProgress.selector, launchId, 36, 448
+        );
+        {
+            uint256 maxMode = uint256(type(LaunchModeV1).max);
+            uint256 maxPhase = uint256(type(LaunchPhaseV1).max);
+            // Fourteen static words: creator, mode/phase, token/hub/rewards, then four uint32 counters.
+            assembly ("memory-safe") {
+                if or(
+                    shr(160, mload(add(ptr, 0x40))),
+                    or(gt(mload(add(ptr, 0x80)), maxMode), gt(mload(add(ptr, 0xa0)), maxPhase))
+                ) { revert(0, 0) }
+                let end := add(ptr, 0x120)
+                for { let cursor := add(ptr, 0xc0) } lt(cursor, end) { cursor := add(cursor, 0x20) } {
+                    if shr(160, mload(cursor)) { revert(0, 0) }
+                }
+                end := add(ptr, 0x1a0)
+                for { let cursor := add(ptr, 0x120) } lt(cursor, end) { cursor := add(cursor, 0x20) } {
+                    if shr(32, mload(cursor)) { revert(0, 0) }
+                }
+            }
+        }
         if (
-            progress.launchId != context.launchId || progress.phase != LaunchPhaseV1.Preparing
-                || progress.token != launchToken || progress.feeHub != hub
-                || context.marketIndex >= progress.marketCount
+            _wordAt(ptr, 0) != launchId || uint256(_wordAt(ptr, 0xa0)) != uint256(LaunchPhaseV1.Preparing)
+                || _wordAt(ptr, 0xc0) != bytes32(uint256(uint160(launchToken)))
+                || _wordAt(ptr, 0xe0) != bytes32(uint256(uint160(hub)))
+                || marketIndex >= uint256(_wordAt(ptr, 0x140))
         ) revert Unauthorized();
     }
 
@@ -612,16 +669,25 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         if (_authorTermsValidated) return;
         address collector = _config.collector;
         address hub = _wordAddress(_staticWord(collector, ILaunchFeeSourceV1.hub.selector));
-        SourceTermsV3 memory terms = ILaunchFeeHubV3(hub).sourceTerms(collector);
+        uint256 ptr = _staticGetter(
+            hub, ILaunchFeeHubV3.sourceTerms.selector, bytes32(uint256(uint160(collector))), 36, 192
+        );
+        // Six static words: two addresses, two bytes32 commitments, then two uint16 fee fields.
+        assembly ("memory-safe") {
+            if or(shr(160, mload(ptr)), shr(160, mload(add(ptr, 0x60)))) { revert(0, 0) }
+            if shr(16, or(mload(add(ptr, 0x80)), mload(add(ptr, 0xa0)))) { revert(0, 0) }
+            // Later hub getters borrow scratch memory; retain these terms without another copy.
+            mstore(0x40, add(ptr, 0xc0))
+        }
         uint16 requiredBps = authorFeeBps();
         if (
             requiredBps > 9_999
                 || _wordAddress(_staticWord(hub, ILaunchFeeHubV2.launchToken.selector)) != token
                 || _wordAddress(_staticWord(hub, ILaunchFeeHubV2.configurator.selector)) != core
-                || terms.adapter != registrar
-                || terms.profileId == bytes32(0) || terms.termsDigest == bytes32(0)
-                || terms.beneficiary == address(0) || terms.developerFeeBps != requiredBps
-                || terms.developerFeeBps > terms.maximumDeveloperFeeBps
+                || _wordAt(ptr, 0) != bytes32(uint256(uint160(registrar)))
+                || _wordAt(ptr, 0x20) == bytes32(0) || _wordAt(ptr, 0x40) == bytes32(0)
+                || _wordAt(ptr, 0x60) == bytes32(0) || uint256(_wordAt(ptr, 0xa0)) != requiredBps
+                || uint256(_wordAt(ptr, 0xa0)) > uint256(_wordAt(ptr, 0x80))
         ) revert InvalidConfiguration();
     }
 
@@ -673,6 +739,13 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         uint256 ptr = _staticGetter(target, selector, boundPoolId, 36, 32);
         assembly ("memory-safe") {
             value := mload(ptr)
+        }
+    }
+
+    /// @dev Read a validated static tuple without default-initializing a memory struct over it.
+    function _wordAt(uint256 ptr, uint256 offset) private pure returns (bytes32 value) {
+        assembly ("memory-safe") {
+            value := mload(add(ptr, offset))
         }
     }
 

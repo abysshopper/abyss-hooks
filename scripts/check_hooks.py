@@ -82,10 +82,10 @@ def write_review_reports(rows, output):
             "sourceFileSha256": pins,
             "sourceManifestSha256": manifest_hash,
             "derivedRegistryFields": {
-                "topology": 2, "configVersion": 5,
+                "topology": 2, "configVersion": 6,
                 "economicVersion": 3, "capabilities": 123, "flags": 0,
                 "callbackFlags": 0x1afc, "callbackMask": 0x3fff,
-                "configSchema": "0x" + codec.config_schema(5).hex(),
+                "configSchema": "0x" + codec.config_schema(6).hex(),
                 "maximumDeveloperFeeBps": declared["developerFeeBps"],
                 "configBoundsDigest": "0x" + codec.config_bounds_digest(declared["bounds"]).hex(),
             },
@@ -252,6 +252,12 @@ def qualify(output, rows, *, rpc_url=None):
     require(not output.exists(), "Use a new evidence output directory")
     output.mkdir(parents=True)
     write_review_reports(rows, output)
+    native_pins = json.loads((ROOT / "scripts/protocol-source-pins.json").read_text(), object_pairs_hook=unique_object)
+    for name, digest in {**native_pins["sha256"], native_pins["fixture"]["path"]: native_pins["fixture"]["sha256"]}.items():
+        source = ROOT / name
+        require(source.is_file() and not source.is_symlink(), f"Missing canonical fixture source: {name}")
+        require(hashlib.sha256(source.read_bytes()).hexdigest() == digest, f"Canonical fixture source pin mismatch: {name}")
+    save_json(output / "protocol-source-evidence.json", native_pins)
     manifest = fork_manifest(FORK_MANIFEST)
     rpc = rpc_url or manifest["rpcUrl"]
     require(isinstance(rpc, str) and rpc.startswith(("https://", "http://")), "Invalid fork RPC override")
@@ -270,7 +276,8 @@ def qualify(output, rows, *, rpc_url=None):
     manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     provenance = {}
     for name in ("foundry.toml", "scripts/upstream.json", "scripts/install-deps.sh", "scripts/check_hooks.py",
-                 "scripts/artifact_checks.py", "scripts/registry_codec.py", "scripts/requirements.txt"):
+                 "scripts/artifact_checks.py", "scripts/registry_codec.py", "scripts/requirements.txt",
+                 "scripts/protocol-source-pins.json", "contracts/test/NativeLaunchGraphFixture.sol"):
         raw = (ROOT / name).read_bytes()
         provenance[name] = hashlib.sha256(raw).hexdigest()
         destination = output / "project-provenance" / name

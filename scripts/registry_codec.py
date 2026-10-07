@@ -1,9 +1,9 @@
-"""Canonical bound-v5 config schema and ConfigBoundsV2 wire commitments."""
+"""Canonical bound-v6 config schema and ConfigBoundsV2 wire commitments."""
 from eth_abi import encode
 from eth_utils import keccak
 
 POSITION_TYPE = "(int24,int24,uint128,bytes32,uint256)[]"
-BASE_TYPES = "uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32"
+BASE_TYPES = "uint16,uint24,int24,uint160,uint24,uint24,uint32,uint8,uint8,address,bool,bytes32"
 AUTHOR_TYPES = "bytes32,bytes32,address,uint16"
 BOUNDS_TYPE = "(int24,int24,uint16,uint16,uint8)"
 BOUND_LIMITS = {
@@ -16,8 +16,8 @@ BOUND_LIMITS = {
 
 
 def config_type(version):
-    if type(version) is not int or version != 5:
-        raise ValueError("Only bound-v5 configs are supported")
+    if type(version) is not int or version != 6:
+        raise ValueError("Only bound-v6 configs are supported")
     return f"({BASE_TYPES},bytes32,{AUTHOR_TYPES},{POSITION_TYPE})"
 
 

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { V4PositionConfigV1 } from "../v1/V4MarketConfigV2.sol";
+import { V4PositionConfigV1 } from "./V4MarketConfigV2.sol";
 
-/// @notice Exact pool-bound constructor economics and explicit developer consent.
-struct V4MarketConfigV5 {
+/// @notice Pool-bound V4 economics and its exact CREATE2 salt, committed by the launch plan.
+struct V4MarketConfigV3 {
     uint16 version;
     uint24 lpFeePips;
     int24 tickSpacing;
@@ -16,9 +16,5 @@ struct V4MarketConfigV5 {
     bool externalLiquidityDisabled;
     bytes32 oracleConfigId;
     bytes32 hookSalt;
-    bytes32 profileId;
-    bytes32 termsDigest;
-    address developerBeneficiary;
-    uint16 developerFeeBps;
     V4PositionConfigV1[] positions;
 }

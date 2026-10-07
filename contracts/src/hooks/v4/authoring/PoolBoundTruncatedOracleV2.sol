@@ -5,7 +5,7 @@ import { StateLibrary } from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import { TickMath } from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import { PoolId } from "@uniswap/v4-core/src/types/PoolId.sol";
 import { ModifyLiquidityParams } from "@uniswap/v4-core/src/types/PoolOperation.sol";
-import { PoolBoundHookParametersV1 } from "../PoolBoundHookParametersV1.sol";
+import { PoolBoundHookParametersV2 } from "../PoolBoundHookParametersV2.sol";
 import { TruncatedOracle } from "../TruncatedOracle.sol";
 import { ILaunchHookOracleV1 } from "./ILaunchHookOracleV1.sol";
 import { PoolBoundLaunchHookBaseV2 } from "./PoolBoundLaunchHookBaseV2.sol";
@@ -27,7 +27,7 @@ abstract contract PoolBoundTruncatedOracleV2 is PoolBoundLaunchHookBaseV2, ILaun
         bytes32 indexed poolId, uint16 cardinalityNextOld, uint16 cardinalityNextNew
     );
 
-    constructor(PoolBoundHookParametersV1 memory parameters) PoolBoundLaunchHookBaseV2(parameters) {
+    constructor(PoolBoundHookParametersV2 memory parameters) PoolBoundLaunchHookBaseV2(parameters) {
         _quoteIs0 = parameters.quoteCurrency < parameters.token;
         (uint24 maxAbsTickMove, uint16 cardinality) =
             validateOracleConfig(parameters.oracleConfigId);
@@ -188,14 +188,13 @@ abstract contract PoolBoundTruncatedOracleV2 is PoolBoundLaunchHookBaseV2, ILaun
     function _oraclePriceMovement()
         internal
         view
-        returns (int256 tickChange, uint32 elapsed, uint24 maximumMove)
+        returns (int256 tickChange, uint32 elapsed)
     {
-        // OracleState: index[0:16], cardinality[16:32], tick[48:72], maximumMove[200:224].
+        // OracleState: index[0:16], cardinality[16:32], signed tick[48:72].
         // Observation: timestamp[0:32], signed cumulative[32:88]; one slot per ring entry.
         // Sealed writers keep both indices inside the fixed ring. Decode only needed fields.
         assembly ("memory-safe") {
             let state := sload(_oracleState.slot)
-            maximumMove := and(shr(200, state), 0xffffff)
             let cardinality := and(shr(16, state), 0xffff)
             if gt(cardinality, 1) {
                 let index := and(state, 0xffff)

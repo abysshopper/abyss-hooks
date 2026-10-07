@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import { LaunchDeltaAccountingFixture } from "./LaunchDeltaAccountingFixture.sol";
+import { NativeLaunchGraphFixture } from "./NativeLaunchGraphFixture.sol";
 import { IPoolManager } from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import { IHooks } from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -22,14 +23,14 @@ import { ILaunchHookV1 } from "../src/hooks/v4/authoring/ILaunchHookV1.sol";
 import { ILaunchHookAuthorTerms } from "../src/hooks/v4/authoring/ILaunchHookAuthorTerms.sol";
 import { ILaunchHookOracleV1 } from "../src/hooks/v4/authoring/ILaunchHookOracleV1.sol";
 import { TruncatedOracle } from "../src/hooks/v4/TruncatedOracle.sol";
-import { PoolBoundHookParametersV1 } from "../src/hooks/v4/PoolBoundHookParametersV1.sol";
+import { PoolBoundHookParametersV2 } from "../src/hooks/v4/PoolBoundHookParametersV2.sol";
 import { V4FeeLiquidityLockerV2 } from "../src/launch/fees/v2/V4FeeLiquidityLockerV2.sol";
 import { FeeAssetPolicyV2 } from "../src/launch/fees/v2/ILaunchFeeHubV2.sol";
 import { ILaunchFeeHubV3 } from "../src/launch/fees/v3/ILaunchFeeHubV3.sol";
 import { LaunchEnvelopeV2, LaunchBoundsV2 } from "../src/launch/lifecycle/v2/ILaunchRegistryV2.sol";
-import { V4MarketConfigV5 } from "../src/launch/lifecycle/v2/V4MarketConfigV5.sol";
+import { V4MarketConfigV6 } from "../src/launch/lifecycle/v2/V4MarketConfigV6.sol";
 import { V4PositionConfigV1 } from "../src/launch/lifecycle/v1/V4MarketConfigV2.sol";
-import { LaunchPlanV1, TokenConfigV1, TokenKindV1, RewardModeV1, AssetFundingV1, FundingKindV1, MarketConfigV1, InitialBuyV1, LaunchModeV1, LaunchPhaseV1, LaunchReceiptV1, PreparedMarketV1, ProfileRegistrationV1 } from "../src/launch/lifecycle/v1/LaunchTypesV1.sol";
+import { LaunchPlanV1, TokenConfigV1, TokenKindV1, RewardModeV1, AssetFundingV1, FundingKindV1, MarketConfigV1, InitialBuyV1, LaunchModeV1, LaunchPhaseV1, LaunchOperationV1, LaunchExecutionContextV1, LaunchProgressV1, LaunchReceiptV1, PreparedMarketV1, ProfileRegistrationV1 } from "../src/launch/lifecycle/v1/LaunchTypesV1.sol";
 import { ForkTrader, IERC20Fork, IWETHFork } from "./ForkTrader.sol";
 
 interface IOracleAdminFork {
@@ -46,7 +47,7 @@ interface IContractOwnerFork {
     function owner() external view returns (address);
 }
 
-contract HookLaunchTest is LaunchDeltaAccountingFixture {
+contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixture {
     using BalanceDeltaLibrary for BalanceDelta;
     using PoolIdLibrary for PoolKey;
 
@@ -69,6 +70,8 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
     IWETHFork private weth;
     ForkTrader private trader;
     uint16 private developerBps;
+    address private collectorFactory;
+    address private collectorDeployer;
 
     struct Receipts {
         address token;
@@ -93,16 +96,33 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
             address target = _address(names[i]);
             assertEq(target.codehash, vm.parseJsonBytes32(manifest, string.concat(".codeHashes.", names[i])), names[i]);
         }
-        core = LaunchOrchestratorV1(_address("core"));
-        registry = LaunchImplementationRegistryV2(_address("registry"));
+        // Historical public V5 graph pins remain evidence, not actors relabelled as V6.
+        envelope = LaunchImplementationRegistryV2(_address("registry"))
+            .profileEnvelope(vm.parseJsonBytes32(manifest, ".referenceProfileId"));
         manager = IPoolManager(_address("manager"));
         weth = IWETHFork(_address("wrappedNative"));
+        developerBps = uint16(vm.envUint("HOOK_MAX_DEVELOPER_BPS"));
+        uint16 cardinality = uint16(vm.envUint("HOOK_MAX_ORACLE_CARDINALITY"));
+        oracleId = keccak256(abi.encode(uint24(17), cardinality));
+        (uint24 movement,) = IAbyssLaunchFactory(_address("oracleFactory")).oracleConfigs(oracleId);
+        if (movement == 0) {
+            IOracleAdminFork oracle = IOracleAdminFork(_address("oracleFactory"));
+            vm.prank(oracle.owner());
+            assertEq(oracle.registerOracleConfig(IOracleAdminFork.OracleConfig(17, cardinality)), oracleId);
+        }
+        NativeLaunchGraph memory graph = _deployNativeLaunchGraph(
+            manager, IAbyssLaunchFactory(_address("oracleFactory")), address(weth),
+            oracleId, developerBps
+        );
+        core = LaunchOrchestratorV1(graph.core);
+        registry = LaunchImplementationRegistryV2(graph.registry);
+        collectorFactory = graph.collectorFactory;
+        collectorDeployer = graph.collectorDeployer;
         assertEq(address(core.registry()), address(registry));
         assertEq(address(registry.core()), address(core));
         author = vm.addr(AUTHOR_KEY);
         creator = makeAddr("hook launch creator");
         executor = makeAddr("hook fee executor");
-        developerBps = uint16(vm.envUint("HOOK_MAX_DEVELOPER_BPS"));
         require(developerBps <= registry.protocolMaximumDeveloperFeeBps(), "developer ceiling exceeds deployed protocol maximum");
         _admitCandidate();
         trader = new ForkTrader(manager);
@@ -209,14 +229,15 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         Receipts memory received = _scenario(mode, 1_200_001);
         PoolKey memory key = ILaunchHookV1(received.hook).poolKey(received.poolId);
         bool sellBase = Currency.unwrap(key.currency0) == received.token;
+        uint24 minimum = PoolBoundLaunchHookBaseV2(received.hook).minimumHookFeePips();
         SwapParams memory preview = SwapParams(sellBase, -int256(1 ether),
             sellBase ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
         uint24 fastRate = IHookFeeRatePreviewFork(received.hook).feeRate(preview);
-        assertGt(fastRate, 2_000, "observed upward movement raises fees above baseline");
+        assertGt(fastRate, minimum, "observed upward movement raises fees above chosen minimum");
         vm.warp(block.timestamp + 120);
         uint24 idleRate = IHookFeeRatePreviewFork(received.hook).feeRate(preview);
         assertLt(idleRate, fastRate, "without new movement the historical rise must fade");
-        assertGe(idleRate, 2_000);
+        assertGe(idleRate, minimum);
         emit log_named_uint("fast upward oracle rate", fastRate);
         emit log_named_uint("idle oracle rate", idleRate);
 
@@ -224,9 +245,40 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         // inside the funded range. The next swap observes that fall, not its own price impact.
         _sellBelowOracle(key, received.poolId, sellBase);
         for (uint256 i; i < 5; ++i) _trade(key, sellBase, -int256(1e12));
-        assertEq(IHookFeeRatePreviewFork(received.hook).feeRate(preview), 2_000,
-            "falling then flat observed prices use baseline");
-        emit log_named_uint("falling and flat oracle rate", 2_000);
+        assertEq(IHookFeeRatePreviewFork(received.hook).feeRate(preview), minimum,
+            "falling then flat observed prices use chosen minimum");
+        emit log_named_uint("falling and flat oracle rate", minimum);
+    }
+
+    function testCreatorConfigurationsChangeActualFeesAndDecayWithWarp() public {
+        vm.skip(!vm.envOr("HOOK_ORACLE_VELOCITY_EXAMPLE", false));
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        uint24[5] memory minimums = [uint24(250), 750, 250, 0, 500];
+        uint24[5] memory maximums = [uint24(10_000), 20_000, 1_000, 10_000, 10_000];
+        uint32[5] memory sensitivities = [uint32(1_000), 1_000, 2_000, 3_000, 0];
+        uint24[5] memory fastRates = [uint24(958), 1_458, 1_000, 2_125, 500];
+        uint24[5] memory idleRates = [uint24(368), 868, 486, 354, 500];
+        for (uint256 i; i < minimums.length; ++i) {
+            uint256 snapshot = vm.snapshotState();
+            Receipts memory received = _scenarioWithPolicy(
+                mode, 1_400_001 + i, minimums[i], maximums[i], sensitivities[i]
+            );
+            PoolKey memory key = ILaunchHookV1(received.hook).poolKey(received.poolId);
+            bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+            uint24 fast = _trade(key, buyBase, -int256(1 ether));
+            vm.warp(block.timestamp + 120);
+            uint24 idle = _trade(key, buyBase, -int256(1 ether));
+            assertEq(fast, fastRates[i], "chosen policy must determine actual fast-swap charge");
+            assertEq(idle, idleRates[i], "idle age must reduce actual charge to the expected rate");
+            if (sensitivities[i] == 0) assertEq(idle, fast, "zero sensitivity is constant minimum");
+            else assertLt(idle, fast, "actual charged fees must fall after warp");
+            emit log_named_uint("creator minimum pips", minimums[i]);
+            emit log_named_uint("creator maximum pips", maximums[i]);
+            emit log_named_uint("creator sensitivity pips seconds per tick", sensitivities[i]);
+            emit log_named_uint("actual fast charged rate", fast);
+            emit log_named_uint("actual idle charged rate", idle);
+            require(vm.revertToStateAndDelete(snapshot), "restore isolated creator policy scenario");
+        }
     }
 
     function _sellBelowOracle(PoolKey memory key, bytes32 id, bool sellBase) private {
@@ -300,9 +352,54 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
     }
 
     function _predeployPlannedHook(LaunchPlanV1 memory plan) private returns (PoolBoundLaunchHookBaseV2) {
-        (PoolBoundHookParametersV1 memory parameters, bytes32 salt) =
+        (PoolBoundHookParametersV2 memory parameters, bytes32 salt) =
             adapter.collectorFactory().poolBoundHookParameters(address(adapter), core.predictToken(plan), plan.markets[0]);
         return deployer.deploy(parameters, salt);
+    }
+
+    function testRegistrationAcceptsLifecycleGetterTrailingData() public {
+        _probeLifecycleGetter(0);
+    }
+
+    function testRegistrationRejectsDirtyUnusedLifecycleWords() public {
+        for (uint256 scenario = 1; scenario <= 5; ++scenario) _probeLifecycleGetter(scenario);
+    }
+
+    function _probeLifecycleGetter(uint256 scenario) private {
+        uint256 snapshot = vm.snapshotState();
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        LaunchPlanV1 memory plan = _planWithFees(mode, 1_500_001 + scenario, developerBps, 10_000);
+        PoolBoundLaunchHookBaseV2 hook = _predeployPlannedHook(plan);
+        vm.prank(creator);
+        bytes32 launchId = core.beginLaunch(plan, LaunchModeV1.Staged).launchId;
+        LaunchProgressV1 memory progress = core.readLaunchProgress(launchId);
+        progress.phase = LaunchPhaseV1.Preparing;
+        bytes memory contextReply = abi.encode(LaunchExecutionContextV1(
+            launchId, 0, LaunchOperationV1.Prepare, address(adapter), address(adapter),
+            progress.token, address(weth), address(manager), address(0), address(0), 0
+        ));
+        bytes memory progressReply = abi.encode(progress);
+        if (scenario == 0) {
+            contextReply = bytes.concat(contextReply, abi.encode(uint256(123)));
+            progressReply = bytes.concat(progressReply, abi.encode(uint256(123)));
+        } else if (scenario <= 2) {
+            // Unused context custody/recipient still require canonical address words.
+            assembly ("memory-safe") { mstore(add(contextReply, add(0x100, mul(scenario, 0x20))), shl(160, 1)) }
+        } else if (scenario == 3) {
+            assembly ("memory-safe") { mstore(add(progressReply, 0x60), shl(160, 1)) }
+        } else {
+            // Unused preparedMarkets/buyCount still require canonical uint32 words.
+            uint256 offset = scenario == 4 ? 0x140 : 0x180;
+            assembly ("memory-safe") { mstore(add(progressReply, offset), shl(32, 1)) }
+        }
+        vm.mockCall(address(core), abi.encodeWithSignature("executionContext()"), contextReply);
+        vm.mockCall(address(core), abi.encodeWithSignature("readLaunchProgress(bytes32)", launchId), progressReply);
+        vm.prank(creator);
+        if (scenario != 0) vm.expectRevert();
+        core.prepareMarkets(plan, 0, 1);
+        assertEq(hook.registered(hook.boundPoolId()), scenario == 0);
+        vm.clearMockedCalls();
+        require(vm.revertToStateAndDelete(snapshot), "restore isolated lifecycle getter scenario");
     }
 
     function testRegistrationAcceptsStructuredGetterLayouts() public {
@@ -326,7 +423,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         PoolKey memory key = hook.poolKey(hook.boundPoolId());
         vm.prank(creator);
         bytes32 launchId = core.beginLaunch(plan, LaunchModeV1.Staged).launchId;
-        address creatorContract = _address("collectorDeployer");
+        address creatorContract = collectorDeployer;
         address collector = vm.computeCreateAddress(creatorContract, vm.getNonce(creatorContract));
         (bytes4 selector, bytes memory response) = _collectorGetterResponse(key, scenario);
         if (scenario >= 23) vm.mockCallRevert(collector, abi.encodePacked(selector), response);
@@ -444,7 +541,12 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
     function _admitCandidate() private {
         bytes memory creation = vm.getCode(vm.envString("HOOK_ARTIFACT"));
         deployer = new PoolHookDeployerV1(creation);
-        envelope = registry.profileEnvelope(vm.parseJsonBytes32(manifest, ".referenceProfileId"));
+        envelope.configVersion = 6;
+        envelope.graph.coreCodeHash = address(core).codehash;
+        envelope.graph.collectorFactory = collectorFactory;
+        envelope.graph.collectorFactoryCodeHash = collectorFactory.codehash;
+        envelope.graph.collectorDeployer = collectorDeployer;
+        envelope.graph.collectorDeployerCodeHash = collectorDeployer.codehash;
         envelope.artifactDigest = keccak256(creation);
         envelope.reviewManifestDigest = keccak256("local hook acceptance fixture");
         envelope.termsDigest = keccak256("local royalty acceptance fixture");
@@ -460,8 +562,14 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         envelope.configBoundsDigest = keccak256(abi.encode(envelope.bounds));
         profileId = registry.profileId(envelope);
         address predictedAdapter = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        locker = V4FeeLiquidityLockerV2(_deployPublic("locker", abi.encode(manager, predictedAdapter)));
-        adapter = PoolMarketAdapterV1(_deployPublic("pool-adapter", abi.encode(core, manager, _address("oracleFactory"), locker, deployer, _address("collectorFactory"), registry, profileId)));
+        locker = V4FeeLiquidityLockerV2(_deployNativeActor(
+            "contracts/protocol/src/launch/fees/v2/V4FeeLiquidityLockerV2.sol:V4FeeLiquidityLockerV2",
+            abi.encode(manager, predictedAdapter)
+        ));
+        adapter = PoolMarketAdapterV1(_deployNativeActor(
+            "contracts/protocol/src/launch/lifecycle/v2/NativePoolMarketAdapterV1.sol:NativePoolMarketAdapterV1",
+            abi.encode(core, manager, _address("oracleFactory"), locker, deployer, collectorFactory, registry, profileId)
+        ));
         assertEq(address(adapter), predictedAdapter);
         envelope.graph.locker = address(locker);
         envelope.graph.lockerCodeHash = address(locker).codehash;
@@ -479,18 +587,10 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         bytes32 digest = registry.authorizationDigest(profileId, registration, envelope, nonce, deadline);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(AUTHOR_KEY, digest);
         vm.startPrank(registry.admin());
-        registry.registerAdapter(adapterId, address(adapter), envelope.capabilities, 5);
+        registry.registerAdapter(adapterId, address(adapter), envelope.capabilities, 6);
         registry.registerProfile(profileId, registration, envelope, nonce, deadline, abi.encodePacked(r, s, v));
         if (!registry.fundingInputAllowed(address(weth))) registry.setFundingInputAllowed(address(weth), true);
         vm.stopPrank();
-        uint16 cardinality = envelope.bounds.maximumOracleCardinality;
-        oracleId = keccak256(abi.encode(uint24(17), cardinality));
-        (uint24 movement,) = IAbyssLaunchFactory(_address("oracleFactory")).oracleConfigs(oracleId);
-        if (movement == 0) {
-            IOracleAdminFork oracle = IOracleAdminFork(_address("oracleFactory"));
-            vm.prank(oracle.owner());
-            assertEq(oracle.registerOracleConfig(IOracleAdminFork.OracleConfig(17, cardinality)), oracleId);
-        }
     }
 
     function _scenario(uint8 mode, uint256 nonce) private returns (Receipts memory received) {
@@ -500,7 +600,21 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
     function _scenarioWithFees(uint8 mode, uint256 nonce, uint24 hookPips)
         private returns (Receipts memory received)
     {
+        return _scenarioWithPolicy(mode, nonce, hookPips == 0 ? 0 : 750, hookPips, 15_000);
+    }
+
+    function _scenarioWithPolicy(uint8 mode, uint256 nonce, uint24 minimum, uint24 hookPips, uint32 sensitivity)
+        private returns (Receipts memory received)
+    {
         LaunchPlanV1 memory plan = _planWithFees(mode, nonce, developerBps, hookPips);
+        V4MarketConfigV6 memory selected = abi.decode(plan.markets[0].config, (V4MarketConfigV6));
+        selected.minimumHookFeePips = minimum;
+        selected.feeSensitivityPipsSecondsPerTick = sensitivity;
+        plan.markets[0].config = abi.encode(selected);
+        (PoolBoundHookParametersV2 memory parameters,) =
+            adapter.collectorFactory().poolBoundHookParameters(address(adapter), core.predictToken(plan), plan.markets[0]);
+        selected.hookSalt = _mine(address(deployer), deployer.initCodeHash(parameters));
+        plan.markets[0].config = abi.encode(selected);
         vm.startPrank(creator);
         core.beginLaunch(plan, LaunchModeV1.Staged);
         core.prepareMarkets(plan, 0, 1);
@@ -527,6 +641,8 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         assertEq(protocolFee, 0);
         assertEq(lpFee, 0);
         assertEq(ILaunchHookV1(prepared.identity.hook).poolConfig(prepared.identity.poolId).hookFeePips, hookPips);
+        assertEq(PoolBoundLaunchHookBaseV2(prepared.identity.hook).minimumHookFeePips(), minimum);
+        assertEq(PoolBoundLaunchHookBaseV2(prepared.identity.hook).feeSensitivityPipsSecondsPerTick(), sensitivity);
         _assertHookFeeBacking(manager, key);
         vm.prank(creator);
         assertTrue(IERC20Fork(receipt.token).approve(address(trader), type(uint256).max));
@@ -559,12 +675,14 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         plan.executorFeeBps = EXECUTOR_BPS;
         plan.token = TokenConfigV1(TokenKindV1.ERC20, RewardModeV1.None, "Hook acceptance token", "HOOK", 3_100 ether, 0, "", bytes32(nonce), creator, false);
         address token = core.predictToken(plan);
-        V4MarketConfigV5 memory config;
-        config.version = 5;
+        V4MarketConfigV6 memory config;
+        config.version = 6;
         config.lpFeePips = lpPips;
         config.tickSpacing = envelope.bounds.minimumTickSpacing;
         config.sqrtPriceX96 = uint160(1 << 96);
         config.hookFeePips = hookPips;
+        config.minimumHookFeePips = hookPips == 0 ? 0 : 750;
+        config.feeSensitivityPipsSecondsPerTick = 15_000;
         config.feeMode = mode;
         config.protocolFeeDenominator = envelope.protocolFeeDenominator;
         config.treasury = envelope.protocolTreasury;
@@ -578,8 +696,8 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         int24 edge = (TickMath.MAX_TICK / config.tickSpacing) * config.tickSpacing;
         config.positions[0] = V4PositionConfigV1(token < address(weth) ? int24(0) : -edge, token < address(weth) ? edge : int24(0), 1_000 ether, bytes32(uint256(1)), 1_000 ether);
         plan.markets = new MarketConfigV1[](1);
-        plan.markets[0] = MarketConfigV1(adapterId, profileId, address(weth), 1_100 ether, 5, abi.encode(config));
-        PoolBoundHookParametersV1 memory parameters;
+        plan.markets[0] = MarketConfigV1(adapterId, profileId, address(weth), 1_100 ether, 6, abi.encode(config));
+        PoolBoundHookParametersV2 memory parameters;
         (parameters,) = adapter.collectorFactory().poolBoundHookParameters(address(adapter), token, plan.markets[0]);
         config.hookSalt = _mine(address(deployer), deployer.initCodeHash(parameters));
         plan.markets[0].config = abi.encode(config);
@@ -593,7 +711,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         plan.feeAssets[1] = FeeAssetPolicyV2(token < address(weth) ? address(weth) : token, 10_000, 0, 0);
     }
 
-    function _trade(PoolKey memory key, bool zeroForOne, int256 amount) private {
+    function _trade(PoolKey memory key, bool zeroForOne, int256 amount) private returns (uint24) {
         vm.warp(block.timestamp + 12);
         vm.roll(block.number + 1);
         SwapBalances memory beforeBalances = _snapshotSwapBalances(key, creator);
@@ -612,6 +730,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         assertGt(output, 0);
         if (amount < 0) assertEq(int256(input), amount);
         else assertEq(int256(output), amount);
+        return fee.rate;
     }
 
     struct OracleBefore {
@@ -874,16 +993,6 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         _assertHookFeeBacking(manager, key);
     }
 
-    function _deployPublic(string memory name, bytes memory arguments) private returns (address target) {
-        string memory path = vm.parseJsonString(manifest, string.concat(".creationCode.", name, ".path"));
-        bytes memory creation = vm.parseBytes(vm.readLine(string.concat("contracts/config/", path)));
-        assertEq(keccak256(creation), vm.parseJsonBytes32(manifest, string.concat(".creationCode.", name, ".creationCodeHash")));
-        bytes memory initcode = bytes.concat(creation, arguments);
-        assertLe(initcode.length, 49_152);
-        assembly ("memory-safe") { target := create(0, add(initcode, 32), mload(initcode)) }
-        assertGt(target.code.length, 0);
-        assertLe(target.code.length, 24_576);
-    }
 
     function _mine(address holder, bytes32 initCodeHash) private pure returns (bytes32) {
         bytes memory preimage = abi.encodePacked(bytes1(0xff), holder, bytes32(0), initCodeHash);

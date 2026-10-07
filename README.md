@@ -12,7 +12,7 @@ Contribute pool-bound Uniswap V4 fee hooks to Black Market.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for hook requirements and developer royalty terms.
 
-The shared base is oracle-free. The dynamic example opts into the [abstract truncated-oracle template](CONTRIBUTING.md#optional-truncated-oracle) to raise fees on faster observed price rises; it compiles into the same submitted hook, not another deployment.
+The shared base is oracle-free. The dynamic example opts into the [abstract truncated-oracle template](CONTRIBUTING.md#optional-truncated-oracle) to raise fees on faster observed price rises. Creators choose independent minimum, maximum and sensitivity per pool, frozen at launch. It remains one submitted hook, not another deployment.
 
 ## Run the checks
 
@@ -24,6 +24,6 @@ scripts/install-deps.sh
 python scripts/check_hooks.py --output evidence/qualification
 ```
 
-Pools use zero LP fees. CI launches each example with a WETH pool, exercises hook-delta fees in both currency modes, and checks accounting and royalty payouts.
+Pools use zero LP fees. CI deploys fresh actual V6 launch infrastructure on a public-chain fork, launches each example with real WETH, and checks hook-delta accounting and royalty payouts in both currency modes. Five creator-selected policies prove actual fee changes and decay with `warp`; zero sensitivity remains constant. Historical deployed V5 infrastructure is not upgraded or relabelled.
 
 Maintainers review each submission. Production registry admission requires separate approval.

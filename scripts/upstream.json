@@ -1,4 +1,6 @@
 {
   "repository": "https://github.com/okjintao/black-market.git",
-  "revision": "9fd85264d8ec0c7a509cb048e9c788d0f2b1afa4"
+  "revision": "9fd85264d8ec0c7a509cb048e9c788d0f2b1afa4",
+  "localAdaptations": "Creator-configurable V2 constructor/config V6 and allocation-free cold ABI guards; the base revision alone does not identify these source changes.",
+  "protocolFixtureSourcePins": "scripts/protocol-source-pins.json"
 }

@@ -16,6 +16,8 @@ struct LaunchHookFeeContextV2 {
     int256 amountSpecified;
     bool zeroForOne;
     uint24 maximumPips;
+    uint24 minimumPips;
+    uint32 feeSensitivityPipsSecondsPerTick;
     ILaunchHookV1.FeeMode feeMode;
 }
 
@@ -24,6 +26,7 @@ struct LaunchHookFeeContextV2 {
 ///      implement _calculateRate. Added selectors, assembly and the complete artifact need review.
 abstract contract LaunchHookFeeRateV2 is ILaunchHookAuthorTerms {
     error FeeTooLarge();
+    error FeeBelowMinimum();
     error InvalidSwapContext();
 
     uint256 private constant RATE_DENOMINATOR = 1_000_000;
@@ -64,8 +67,10 @@ abstract contract LaunchHookFeeRateV2 is ILaunchHookAuthorTerms {
     function _boundedRate(LaunchHookFeeContextV2 memory context) internal view returns (uint24 rate) {
         if (context.amountSpecified == type(int256).min) revert FeeTooLarge();
         uint24 maximumPips = context.maximumPips;
+        uint24 minimumPips = context.minimumPips;
         rate = swapFeeModel() == SwapFeeModel.Static ? maximumPips : _calculateRate(context);
         if (rate > maximumPips) revert FeeTooLarge();
+        if (rate < minimumPips) revert FeeBelowMinimum();
     }
 
     /// @dev Consume before external afterSwap checkpoints; all successful return paths clear it.

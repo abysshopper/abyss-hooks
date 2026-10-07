@@ -6,7 +6,7 @@ import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
 import { IAbyssLaunchFactory } from "./IAbyssLaunch.sol";
 import { ILaunchHookV1 } from "../hooks/v4/authoring/ILaunchHookV1.sol";
 import { PoolHookDeployerV1 } from "../hooks/v4/authoring/PoolHookDeployerV1.sol";
-import { PoolBoundHookParametersV1 } from "../hooks/v4/PoolBoundHookParametersV1.sol";
+import { PoolBoundHookParametersV2 } from "../hooks/v4/PoolBoundHookParametersV2.sol";
 import { ILaunchFeeSourceV1 } from "../launch/fees/v1/ILaunchFeeSourceV1.sol";
 import { V4FeeLiquidityLockerV2 } from "../launch/fees/v2/V4FeeLiquidityLockerV2.sol";
 import {
@@ -16,7 +16,7 @@ import {
 import { MarketConfigV1 } from "../launch/lifecycle/v1/LaunchTypesV1.sol";
 import { ILaunchRegistryV2 } from "../launch/lifecycle/v2/ILaunchRegistryV2.sol";
 
-/// @notice Deployed Black Market integration ABIs; no integration implementation is vendored.
+/// @notice Black Market integration ABIs used for the pinned venues and fresh V6 fixture actors.
 interface LaunchOrchestratorV1 is ILaunchLifecycleV1 {
     function registry() external view returns (ILaunchImplementationRegistryV1);
     function tokenFactory() external view returns (ILaunchTokenFactoryV1);
@@ -63,5 +63,5 @@ interface V4FeeCollectorV2 is ILaunchFeeSourceV1 {
 
 interface PoolFeeCollectorFactoryV1 {
     function poolBoundHookParameters(address registrar, address token, MarketConfigV1 calldata market)
-        external view returns (PoolBoundHookParametersV1 memory parameters, bytes32 salt);
+        external view returns (PoolBoundHookParametersV2 memory parameters, bytes32 salt);
 }

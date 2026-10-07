@@ -3,13 +3,13 @@ pragma solidity ^0.8.28;
 
 import { SSTORE2 } from "solady/utils/SSTORE2.sol";
 import { LibBytes } from "solady/utils/LibBytes.sol";
-import { PoolBoundHookParametersV1 } from "../PoolBoundHookParametersV1.sol";
+import { PoolBoundHookParametersV2 } from "../PoolBoundHookParametersV2.sol";
 import { V4HookFlags } from "../V4HookFlags.sol";
 import { PoolBoundLaunchHookBaseV2 } from "./PoolBoundLaunchHookBaseV2.sol";
 
 /// @notice Typed explicit-salt CREATE2 holder for one exact pool-bound creation artifact.
 /// @dev Immutable STOP-prefixed chunks preserve the supplied creationCodeHash forever, with the
-///      exact PoolBoundHookParametersV1 constructor tuple. No owner, replacement, arbitrary deploy
+///      exact PoolBoundHookParametersV2 constructor tuple. No owner, replacement, arbitrary deploy
 ///      bytes, delegatecall or onchain salt mining exists. Permissionless deployment grants no
 ///      binding, initialization or payout authority. Review and pin the holder, chunks, concrete
 ///      artifact and dependencies; this deployer's ABI/provenance records do not prove hook safety.
@@ -52,7 +52,7 @@ contract PoolHookDeployerV1 {
         }
     }
 
-    function initCodeHash(PoolBoundHookParametersV1 calldata parameters)
+    function initCodeHash(PoolBoundHookParametersV2 calldata parameters)
         public
         view
         returns (bytes32)
@@ -60,7 +60,7 @@ contract PoolHookDeployerV1 {
         return keccak256(_initCode(parameters));
     }
 
-    function predict(PoolBoundHookParametersV1 calldata parameters, bytes32 salt)
+    function predict(PoolBoundHookParametersV2 calldata parameters, bytes32 salt)
         public
         view
         returns (address)
@@ -73,7 +73,7 @@ contract PoolHookDeployerV1 {
     }
 
     /// @dev Existing-address acceptance is the adapter's exact provenance check, not a fallback.
-    function deploy(PoolBoundHookParametersV1 calldata parameters, bytes32 salt)
+    function deploy(PoolBoundHookParametersV2 calldata parameters, bytes32 salt)
         external
         returns (PoolBoundLaunchHookBaseV2 hook)
     {
@@ -100,7 +100,7 @@ contract PoolHookDeployerV1 {
         );
     }
 
-    function _initCode(PoolBoundHookParametersV1 calldata parameters)
+    function _initCode(PoolBoundHookParametersV2 calldata parameters)
         private
         view
         returns (bytes memory initCode)

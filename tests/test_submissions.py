@@ -246,10 +246,10 @@ class SubmissionBoundaries(unittest.TestCase):
 
 
 class RegistryCodecBoundaries(unittest.TestCase):
-    def test_bound_v5_schema_matches_canonical_wire_tuple(self):
-        wire = "(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"
-        self.assertEqual(checks.codec.config_schema(5), keccak(text=wire))
-        for version in (4, True, "5", 6):
+    def test_bound_v6_schema_matches_canonical_wire_tuple(self):
+        wire = "(uint16,uint24,int24,uint160,uint24,uint24,uint32,uint8,uint8,address,bool,bytes32,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"
+        self.assertEqual(checks.codec.config_schema(6), keccak(text=wire))
+        for version in (4, True, "6", 5):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 checks.codec.config_schema(version)
 

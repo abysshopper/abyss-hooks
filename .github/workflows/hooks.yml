@@ -87,7 +87,8 @@ jobs:
         run: forge test --match-path contracts/test/DynamicFeeRate.t.sol -vv 2>&1 | tee ci-logs/dynamic-rate.log
       - name: Qualify every catalogue hook
         shell: bash
-        run: python scripts/check_hooks.py --output evidence 2>&1 | tee ci-logs/qualification.log
+        # Independent public endpoint; retain chain, fork and deployed-code validation.
+        run: python scripts/check_hooks.py --output evidence --rpc-url https://robinhood.drpc.org 2>&1 | tee ci-logs/qualification.log
       - name: Present registration review report
         if: always()
         shell: bash

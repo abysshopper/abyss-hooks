@@ -55,7 +55,7 @@ def integration_inputs(folder):
     require(data["kind"] in ("reference", "submission"), "Unsupported integration kind")
     author = data["authorId"]
     if data["kind"] == "reference":
-        require(folder.name == "reference-bound", "Only canonical example folders may declare reference kind")
+        require(folder.name in {"reference-bound", "dynamic-fee"}, "Only canonical example folders may declare reference kind")
         require(author is None, "Reference examples must declare null authorId")
     else:
         require(isinstance(author, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", author) and int(author, 16) != 0, "authorId must be a nonzero 20-byte address")
@@ -218,6 +218,8 @@ def receipt_evidence(path, manifest, declared):
         require(name in receipt, f"Missing receipt field: {name}")
         receipt[name] = canonical_integer(receipt[name], name)
     require(receipt["tradeCount"] >= 2, "Receipt requires actual trades in both directions")
+    require(receipt["lpFeesCollected"] == 0, "Hook-only fees require zero collected LP fees")
+    require(receipt["hookFeesCollected"] > 0, "Qualification requires actual hook trading fees")
     require(receipt["developerFeeBps"] == declared["developerFeeBps"], "Receipt developerFeeBps differs from required author rate")
     require(receipt["authorFeeBps"] == declared["developerFeeBps"], "Receipt authorFeeBps differs from author declaration")
     require(receipt["swapFeeModel"] == SWAP_FEE_MODELS[declared["swapFeeModel"]],

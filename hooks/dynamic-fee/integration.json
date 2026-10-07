@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "kind": "reference",
+  "authorId": null,
+  "developerFeeBps": 500,
+  "swapFeeModel": "dynamic",
+  "terms": "DynamicFeeHook reference example only. The required 500 bps author share allocates source-attributed owner fees after bounty through the existing V3 hub; it is not a swap surcharge. Dynamic swaps require zero LP fee and charge only a hook trading fee bounded by the creator-configured maximum. No production author identity, author-control proof or registry admission is proposed.",
+  "bounds": {
+    "minimumTickSpacing": 1,
+    "maximumTickSpacing": 32767,
+    "maximumPositions": 32,
+    "maximumOracleCardinality": 4096,
+    "feeModeFlags": 3
+  }
+}

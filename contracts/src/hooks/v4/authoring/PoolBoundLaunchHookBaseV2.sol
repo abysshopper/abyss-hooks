@@ -7,7 +7,6 @@ import { PoolBoundLaunchHookValidationV2 } from "./PoolBoundLaunchHookValidation
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IPoolManager } from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import { IHooks } from "@uniswap/v4-core/src/interfaces/IHooks.sol";
-import { LPFeeLibrary } from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import { StateLibrary } from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import { TickMath } from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import { BalanceDelta, BalanceDeltaLibrary } from "@uniswap/v4-core/src/types/BalanceDelta.sol";
@@ -479,7 +478,8 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
         returns (LaunchHookFeeContextV2 memory context, int24 spotTick)
     {
         PoolId pool = PoolId.wrap(boundPoolId);
-        (uint160 sqrtPriceX96, int24 tick,,) = StateLibrary.getSlot0(poolManager, pool);
+        (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee,) = StateLibrary.getSlot0(poolManager, pool);
+        if (protocolFee != 0) revert InvalidConfiguration();
         spotTick = tick;
         context = LaunchHookFeeContextV2({
             poolId: boundPoolId,
@@ -613,7 +613,7 @@ abstract contract PoolBoundLaunchHookBaseV2 is ILaunchHookV1, LaunchHookReentran
                 || parameters.registrar == address(this) || parameters.core == address(this)
                 || parameters.liquidityLocker == address(this)
                 || parameters.liquidityLocker == parameters.poolManager
-                || parameters.lpFeePips > LPFeeLibrary.MAX_LP_FEE
+                || parameters.lpFeePips != 0
                 || parameters.tickSpacing < TickMath.MIN_TICK_SPACING
                 || parameters.tickSpacing > TickMath.MAX_TICK_SPACING
                 || parameters.sqrtPriceX96 < TickMath.MIN_SQRT_PRICE

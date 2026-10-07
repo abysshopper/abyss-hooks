@@ -148,17 +148,19 @@ class SubmissionBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Exact integration fields"):
             checks.submissions(self.root)
 
-    def test_canonical_reference_accepts_required_rate_but_requires_null_author(self):
-        reference = self.root / "reference-bound"
-        self.folder.rename(reference)
-        self.folder = reference
-        self.integration.update(kind="reference", authorId=None, developerFeeBps=500)
-        self.save_integration()
-        self.assertEqual(checks.integration_inputs(reference)["developerFeeBps"], 500)
-        self.integration["authorId"] = "0x" + "11" * 20
-        self.save_integration()
-        with self.assertRaisesRegex(ValueError, "null authorId"):
-            checks.integration_inputs(reference)
+    def test_canonical_examples_accept_required_rate_but_require_null_author(self):
+        for name in ("reference-bound", "dynamic-fee"):
+            with self.subTest(name=name):
+                reference = self.root / name
+                self.folder.rename(reference)
+                self.folder = reference
+                self.integration.update(kind="reference", authorId=None, developerFeeBps=500)
+                self.save_integration()
+                self.assertEqual(checks.integration_inputs(reference)["developerFeeBps"], 500)
+                self.integration["authorId"] = "0x" + "11" * 20
+                self.save_integration()
+                with self.assertRaisesRegex(ValueError, "null authorId"):
+                    checks.integration_inputs(reference)
 
     def test_candidate_environment_uses_exact_declared_rate_and_model(self):
         for kind in ("reference", "submission"):
@@ -376,7 +378,7 @@ class ReceiptEvidenceBoundaries(unittest.TestCase):
             "schema": "abyss-hooks.launch-receipts.v1", "token": "0x" + "22" * 20,
             "poolId": "0x" + "33" * 32, "hook": "0x" + "44" * 20,
             "quoteAsset": self.manifest["addresses"]["wrappedNative"], "treasuryPaid": "10",
-            "ownerPaid": "190", "authorPaid": "10", "hookFeesCollected": "200", "lpFeesCollected": "20",
+            "ownerPaid": "190", "authorPaid": "10", "hookFeesCollected": "200", "lpFeesCollected": "0",
             "tradeCount": 2, "developerFeeBps": 500, "authorFeeBps": 500, "swapFeeModel": 0,
             "expectedAuthorPaid": "10", "expectedOwnerPaid": "190",
         }
@@ -403,6 +405,15 @@ class ReceiptEvidenceBoundaries(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.parse()
                 self.receipt[name] = original
+
+    def test_hook_only_receipts_reject_lp_proceeds_and_missing_hook_fees(self):
+        for field, value in (("lpFeesCollected", 1), ("hookFeesCollected", 0)):
+            with self.subTest(field=field):
+                original = self.receipt[field]
+                self.receipt[field] = value
+                with self.assertRaises(ValueError):
+                    self.parse()
+                self.receipt[field] = original
 
     def test_paid_and_runtime_author_rates_must_each_equal_declaration(self):
         for field in ("developerFeeBps", "authorFeeBps"):

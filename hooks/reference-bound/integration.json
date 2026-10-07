@@ -4,7 +4,7 @@
   "authorId": null,
   "developerFeeBps": 500,
   "swapFeeModel": "static",
-  "terms": "Reference example only. The required 500 bps author share allocates owner fees after bounty through the existing V3 hub, independently of creator LP and hook swap fees. No production author identity or registry admission is proposed.",
+  "terms": "Reference example only. Zero pool LP fee; the creator-selected trading fee is charged through hook deltas. The required 500 bps author share allocates source-attributed owner fees after bounty through the existing V3 hub, not an extra swap surcharge. No production author identity or registry admission is proposed.",
   "bounds": {
     "minimumTickSpacing": 1,
     "maximumTickSpacing": 32767,

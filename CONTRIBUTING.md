@@ -2,7 +2,7 @@
 
 ## Submission
 
-Copy `hooks/reference-bound` to `hooks/<slug>`. Only `PoolBoundV4` submissions are supported. Use a lowercase kebab-case slug, rename the source and contract, and update the declarations.
+Copy `hooks/reference-bound` for static fees or `hooks/dynamic-fee` for a custom dynamic schedule into `hooks/<slug>`. Only `PoolBoundV4` submissions are supported. Use a lowercase kebab-case slug, rename the source and contract, and update the declarations.
 
 Each folder must contain:
 
@@ -22,7 +22,7 @@ Additional local Solidity files are allowed. No nested directories, symlinks, sc
 | Field | Accepted values |
 | --- | --- |
 | `schemaVersion` | Integer `2` |
-| `kind` | `submission`; `reference` is reserved for `reference-bound` |
+| `kind` | `submission`; `reference` is reserved for `reference-bound` and `dynamic-fee` |
 | `authorId` | Submission: nonzero `0x`-prefixed 20-byte stable author ID—not the live payout wallet; reference: `null` |
 | `developerFeeBps` | Integer `0..9999`; required author share of attributed owner proceeds after bounty; zero means free |
 | `swapFeeModel` | `static` or `dynamic`, matching the hook declaration |
@@ -39,7 +39,7 @@ Missing, extra or duplicate fields and incorrect numeric types are rejected. The
 
 - Derive from `PoolBoundLaunchHookBaseV2`; preserve its typed constructor. The base works without a fee-calculation override.
 - Override `authorFeeBps()` to declare your required payment rate; its default is zero. Match it in `integration.json`. Do not supply a payout address.
-- Static is the default: preserve the creator's configured LP and hook fees. Only explicitly dynamic hooks override `swapFeeModel()` and `_calculateRate(LaunchHookFeeContextV2 memory)`.
+- Pool LP fees must be zero. Static is the default: charge the creator's configured trading fee through hook deltas. Only explicitly dynamic hooks override `swapFeeModel()` and `_calculateRate(LaunchHookFeeContextV2 memory)`.
 - Dynamic rates must not exceed the configured hook-fee maximum. The base freezes one rate before each swap and applies full-precision `floor(amount * rate / 1_000_000)` charges, bounded by `int128.max`. Disclose the formula, rounding and potential reverts.
 - Preserve manager-only callbacks, mask `0x1afc` under `0x3fff`, one-time registrar binding and exact full-key checks.
 - Preserve permanent liquidity custody, fee-only accounting, backing, settlement and collector-only collection. Donations are not fees.
@@ -59,11 +59,15 @@ function authorFeeBps() public pure override returns (uint16) {
 
 Maintainers review the complete artifact and terms, deploy the approved graph, and register the signed profile with the stable `authorId`. The existing registry field `maximumDeveloperFeeBps` is set to the approved required rate. Launch builders must set `developerFeeBps` to that exact rate; the hook rejects a different frozen hub rate before acquiring liquidity. Registration and initialization precede the hub's terms binding, so enforcement occurs at the first liquidity callback, not registration.
 
-The hub allocates the author's share once from canonical LP and hook fee proceeds attributed to this source, after the executor bounty and owner/rewards/burn split. It pays the registry's current payout for the stable author ID. Neither the hook nor the collector transfers a second author fee. Payment terms do not change the creator's selected disposition policy.
+The hub allocates the author's share once from source-attributed owner proceeds, after the executor bounty and owner/rewards/burn split. These hooks generate hook-fee proceeds, not LP fees. It pays the registry's current payout for the stable author ID. Neither the hook nor the collector transfers a second author fee. Payment terms do not change the creator's selected disposition policy.
 
-The UI's ordinary launch presets use the selected LP fee and zero hook fee; author payment can still come from LP proceeds. Advanced launches configure hook fees separately. Static hooks use that configured hook rate; dynamic hooks treat it as their maximum, and zero remains zero. `poolKey()` exposes the configured LP fee, `poolConfig()` the hook maximum and fee currency mode, and `feeRate(SwapParams)` previews the current hook rate. A preview is not a guaranteed execution quote or an eventual exact-output fee amount. Do not add author bps to swap pips or combine fees charged in different currencies into one raw rate.
+Launch configuration must set `lpFeePips: 0` and place the selected trading fee in `hookFeePips`. Static hooks charge that rate; dynamic hooks treat it as their maximum, and zero remains zero. Clients must finalize this configuration before mining the hook salt. `poolKey()` exposes the zero LP fee, `poolConfig()` the hook maximum and fee currency mode, and `feeRate(SwapParams)` previews the current hook rate. A preview is not a guaranteed execution quote or an eventual exact-output fee amount. Do not add author bps to swap pips or combine fees charged in different currencies into one raw rate.
+
+`InputToken` collects the trader's input asset, so fees can accrue in either pool token across directions. `QuoteOnly` collects the quote asset in both directions. `feeModeFlags: 3` permits either selection; it does not charge both currencies on the same swap. The base also rejects a nonzero PoolManager protocol fee before trading rather than silently adding a second fee; governance enabling one will stop swaps until it is cleared.
 
 For a dynamic hook, explicitly return `SwapFeeModel.Dynamic` from `swapFeeModel()` and implement `_calculateRate`. Its typed context contains the exact pool ID, pre-swap price/liquidity, original signed request, direction, configured maximum and fee currency mode. A static declaration never invokes that override.
+
+[`DynamicFeeHook`](hooks/dynamic-fee/DynamicFeeHook.sol) is a complete custom example. Its exact-input rate starts at `floor(maximumPips / 5)` and increases with input relative to the current input-side virtual reserve using a bounded rational curve. Exact output or unavailable reserves use the configured maximum. It overrides only the author rate, dynamic declaration and pure rate seam; all accounting remains in the template. The [example review](hooks/dynamic-fee/review.md) specifies the formula, rounding and boundaries.
 
 ### Provided accounting
 
@@ -97,7 +101,7 @@ Use the [PR template](.github/pull_request_template.md). Link the current Action
 
 Review `PR-REVIEW.md` and `<slug>.registration-inputs.json` from the Actions artifacts. Reports separate declared inputs, file SHA256 pins, measured artifact evidence, derived registry fields and pending admission inputs. File pins are not Solidity admission digests.
 
-CI independently reconstructs the submitted artifact and runs real standard ERC20/WETH launches on a local fork. It exercises every declared fee mode, exact-input/output swaps in both directions, previewed versus charged hook rates, and exact treasury, executor, owner and developer receipts. It also checks reduced-payment rejection and zero-hook-fee launches paying the registered payout from LP proceeds. The scenario uses the declared required author rate, minimum tick spacing, maximum oracle cardinality and one LP position; it is not exhaustive bounds coverage.
+CI independently reconstructs each submitted artifact and runs real standard ERC20/WETH launches on a local fork with zero LP fees. It exercises both declared fee modes, exact-input/output swaps in both directions, previewed versus charged hook rates, and exact treasury, executor, owner and developer receipts. It also checks nonzero LP-fee and reduced-payment rejection, registered payout routing, zero-fee trading, zero-credit claim behavior and rejection of PoolManager protocol fees. The scenario uses the declared author rate, minimum tick spacing, maximum oracle cardinality and one LP position; it is not exhaustive bounds coverage. Dynamic rate boundary tests run separately in CI.
 
 Adapter and locker creation bytes come from the public transactions recorded in `contracts/config/robinhood.json`. Local fixture admission uses fork-only administrator impersonation and a test author signature. CI has no wallet credentials and never broadcasts. This does not prove control of the submitted `authorId` or establish arbitrary-runtime safety.
 

@@ -19,7 +19,7 @@ For tooling changes: describe the reason and catalogue-wide impact instead.
 
 - [ ] Complete Solidity sources, `hook.json`, `integration.json` and `review.md` included.
 - [ ] New hook uses `kind: submission` with a stable authorId, exact `developerFeeBps`, `swapFeeModel`, terms and five registry bounds.
-- [ ] Typed constructor, fee bounds, authentication, custody, treasury and oracle behavior preserved.
+- [ ] Typed constructor, zero pool LP fee, hook fee bounds, authentication, custody, treasury and oracle behavior preserved.
 - [ ] Source rights and dependency licenses checked.
 - [ ] Whole-catalogue checks passed, or missing/failed checks disclosed.
 

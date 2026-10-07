@@ -38,6 +38,10 @@ interface IHookFeeRatePreviewFork {
     function feeRate(SwapParams calldata params) external view returns (uint24);
 }
 
+interface IContractOwnerFork {
+    function owner() external view returns (address);
+}
+
 contract HookLaunchTest is LaunchDeltaAccountingFixture {
     using BalanceDeltaLibrary for BalanceDelta;
     using PoolIdLibrary for PoolKey;
@@ -140,19 +144,59 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         ))), 0, "mismatched payment must not acquire liquidity");
     }
 
-    function testOrdinaryUIFeesPayAuthorFromLPProceeds() public {
+    function testRegisteredPayoutReceivesHookRoyalties() public {
         uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
         address payout = makeAddr("registered author payout");
         vm.prank(author);
         registry.setAuthorPayout(author, payout);
-        Receipts memory received = _scenarioWithFees(mode, 300_001, 0);
-        assertEq(received.hookFeesCollected, 0);
-        assertEq(received.treasuryPaid, 0);
-        assertGt(received.lpFeesCollected, 0);
+        Receipts memory received = _scenarioWithFees(mode, 300_001, 10_000);
+        assertGt(received.hookFeesCollected, 0);
+        assertEq(received.lpFeesCollected, 0);
         assertEq(received.authorPaid, received.expectedAuthorPaid);
         assertEq(received.ownerPaid, received.expectedOwnerPaid);
         assertEq(weth.balanceOf(payout), received.authorPaid);
         assertEq(weth.balanceOf(author), 0, "stable identity is not the payout destination");
+    }
+
+    function testConfiguredZeroHookFeeIsFree() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        Receipts memory received = _scenarioWithFees(mode, 400_001, 0);
+        assertEq(received.hookFeesCollected, 0);
+        assertEq(received.lpFeesCollected, 0);
+        assertEq(received.treasuryPaid, 0);
+        assertEq(received.authorPaid, 0);
+        assertEq(received.ownerPaid, 0);
+    }
+
+    function testLaunchRejectsNonzeroPoolLPFee() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        LaunchPlanV1 memory plan = _planWithPoolFee(mode, 500_001, developerBps, 10_000, 3_000);
+        vm.startPrank(creator);
+        bytes32 launchId = core.beginLaunch(plan, LaunchModeV1.Staged).launchId;
+        vm.expectRevert();
+        core.prepareMarkets(plan, 0, 1);
+        vm.stopPrank();
+        assertFalse(core.isLaunchActive(launchId));
+        assertEq(core.readLaunchProgress(launchId).preparedMarkets, 0);
+    }
+
+    function testTradingRejectsPoolManagerProtocolFee() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        Receipts memory received = _scenarioWithFees(mode, 600_001, 10_000);
+        PoolKey memory key = ILaunchHookV1(received.hook).poolKey(received.poolId);
+        vm.prank(IContractOwnerFork(address(manager)).owner());
+        manager.setProtocolFeeController(address(this));
+        manager.setProtocolFee(key, 100);
+        SwapBalances memory beforeBalances = _snapshotSwapBalances(key, creator);
+        SwapParams memory params = SwapParams(true, -int256(1 ether), TickMath.MIN_SQRT_PRICE + 1);
+        vm.expectRevert();
+        IHookFeeRatePreviewFork(received.hook).feeRate(params);
+        vm.prank(creator);
+        vm.expectRevert();
+        trader.trade(key, params);
+        assertEq(IERC20Fork(Currency.unwrap(key.currency0)).balanceOf(creator), beforeBalances.amount0);
+        assertEq(IERC20Fork(Currency.unwrap(key.currency1)).balanceOf(creator), beforeBalances.amount1);
+        _assertHookFeeBacking(manager, key);
     }
 
     function _admitCandidate() private {
@@ -234,7 +278,10 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         assertEq(uint256(terms.swapFeeModel()), vm.envUint("HOOK_SWAP_FEE_MODEL"));
         assertEq(ILaunchFeeHubV3(receipt.feeHub).sourceTerms(prepared.feeSource).beneficiary, author);
         assertEq(ILaunchFeeHubV3(receipt.feeHub).sourceTerms(prepared.feeSource).developerFeeBps, developerBps);
-        assertEq(key.fee, 3_000, "LP fee must preserve launch settings");
+        assertEq(key.fee, 0, "pool LP fee must be zero");
+        (,, uint24 protocolFee, uint24 lpFee) = StateLibrary.getSlot0(manager, key.toId());
+        assertEq(protocolFee, 0);
+        assertEq(lpFee, 0);
         assertEq(ILaunchHookV1(prepared.identity.hook).poolConfig(prepared.identity.poolId).hookFeePips, hookPips);
         _assertHookFeeBacking(manager, key);
         vm.prank(creator);
@@ -254,6 +301,12 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
     function _planWithFees(uint8 mode, uint256 nonce, uint16 selectedAuthorBps, uint24 hookPips)
         private view returns (LaunchPlanV1 memory plan)
     {
+        return _planWithPoolFee(mode, nonce, selectedAuthorBps, hookPips, 0);
+    }
+
+    function _planWithPoolFee(uint8 mode, uint256 nonce, uint16 selectedAuthorBps, uint24 hookPips, uint24 lpPips)
+        private view returns (LaunchPlanV1 memory plan)
+    {
         plan.chainId = block.chainid;
         plan.orchestrator = address(core);
         plan.creator = creator;
@@ -264,7 +317,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         address token = core.predictToken(plan);
         V4MarketConfigV5 memory config;
         config.version = 5;
-        config.lpFeePips = 3_000;
+        config.lpFeePips = lpPips;
         config.tickSpacing = envelope.bounds.minimumTickSpacing;
         config.sqrtPriceX96 = uint160(1 << 96);
         config.hookFeePips = hookPips;
@@ -302,6 +355,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         SwapBalances memory beforeBalances = _snapshotSwapBalances(key, creator);
         SwapParams memory params = SwapParams(zeroForOne, amount, zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
         TradeFee memory fee = _tradeFeeBefore(key, params);
+        emit log_named_uint("hook rate pips", fee.rate);
         vm.prank(creator);
         BalanceDelta delta = trader.trade(key, params);
         _assertSwapAccounting(manager, key, address(trader), creator, beforeBalances, delta);
@@ -393,7 +447,12 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         vm.prank(executor);
         assertEq(hub.claimDeveloperFees(author, fee.asset), expectedAuthor);
         vm.prank(creator);
-        assertEq(hub.claimOwnerFees(fee.asset, creator), expectedOwner);
+        if (expectedOwner == 0) {
+            vm.expectRevert(bytes4(keccak256("NothingToClaim()")));
+            hub.claimOwnerFees(fee.asset, creator);
+        } else {
+            assertEq(hub.claimOwnerFees(fee.asset, creator), expectedOwner);
+        }
         authorPaid = asset.balanceOf(payout) - authorBefore;
         ownerPaid = asset.balanceOf(creator) - ownerBefore;
         assertEq(authorPaid, expectedAuthor);
@@ -417,6 +476,13 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         uint256 grossHook = hook.pendingFees(prepared.identity.poolId, address(weth));
         uint256 treasuryDue = hook.pendingTreasurySweeps(prepared.identity.poolId, address(weth));
         FeePreview[] memory fees = _preview(prepared, address(hub));
+        for (uint256 i; i < fees.length; ++i) {
+            assertEq(
+                fees[i].amount + hook.pendingTreasurySweeps(prepared.identity.poolId, fees[i].asset),
+                hook.pendingFees(prepared.identity.poolId, fees[i].asset),
+                "canonical proceeds must contain hook fees only"
+            );
+        }
         vm.prank(executor);
         hub.claimAndSplit();
         received.token = receipt.token;
@@ -425,7 +491,6 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
         for (uint256 i; i < fees.length; ++i) {
             (uint256 ownerPaid, uint256 authorPaid) = _claimAsset(hub, fees[i]);
             if (fees[i].asset == address(weth)) {
-                assertGt(fees[i].amount, 0);
                 received.treasuryPaid = IERC20Fork(fees[i].asset).balanceOf(envelope.protocolTreasury) - fees[i].treasuryBefore;
                 assertEq(received.treasuryPaid, treasuryDue);
                 received.ownerPaid = ownerPaid;
@@ -434,7 +499,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture {
                 received.expectedAuthorPaid = FullMath.mulDiv(fees[i].amount - bounty, developerBps, 10_000);
                 received.expectedOwnerPaid = fees[i].amount - bounty - received.expectedAuthorPaid;
                 received.hookFeesCollected = grossHook;
-                assertGe(fees[i].amount + treasuryDue, grossHook);
+                assertEq(fees[i].amount + treasuryDue, grossHook);
                 received.lpFeesCollected = fees[i].amount + treasuryDue - grossHook;
             }
             assertEq(hook.pendingFees(prepared.identity.poolId, fees[i].asset), 0);

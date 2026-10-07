@@ -82,6 +82,9 @@ jobs:
         run: python -m pip install -r scripts/requirements.txt
       - name: Install pinned public Solidity dependencies
         run: scripts/install-deps.sh
+      - name: Check dynamic rate boundaries
+        shell: bash
+        run: forge test --match-path contracts/test/DynamicFeeRate.t.sol -vv 2>&1 | tee ci-logs/dynamic-rate.log
       - name: Qualify every catalogue hook
         shell: bash
         run: python scripts/check_hooks.py --output evidence 2>&1 | tee ci-logs/qualification.log

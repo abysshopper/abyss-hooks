@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "name": "dynamic-fee",
+  "topology": "PoolBoundV4",
+  "source": "DynamicFeeHook.sol",
+  "contract": "DynamicFeeHook",
+  "license": "MIT"
+}

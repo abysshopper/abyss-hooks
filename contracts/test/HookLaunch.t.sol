@@ -31,7 +31,7 @@ import { LaunchEnvelopeV2, LaunchBoundsV2 } from "../src/launch/lifecycle/v2/ILa
 import { V4MarketConfigV6 } from "../src/launch/lifecycle/v2/V4MarketConfigV6.sol";
 import { V4PositionConfigV1 } from "../src/launch/lifecycle/v1/V4MarketConfigV2.sol";
 import { LaunchPlanV1, TokenConfigV1, TokenKindV1, RewardModeV1, AssetFundingV1, FundingKindV1, MarketConfigV1, InitialBuyV1, LaunchModeV1, LaunchPhaseV1, LaunchOperationV1, LaunchExecutionContextV1, LaunchProgressV1, LaunchReceiptV1, PreparedMarketV1, ProfileRegistrationV1 } from "../src/launch/lifecycle/v1/LaunchTypesV1.sol";
-import { ForkTrader, IERC20Fork, IWETHFork } from "./ForkTrader.sol";
+import { ForkTrader, IERC20Fork, IWETHFork, PermissiveSignatureAuthorityFork } from "./ForkTrader.sol";
 
 interface IOracleAdminFork {
     struct OracleConfig { uint24 maxAbsTickMove; uint16 cardinality; }
@@ -41,6 +41,12 @@ interface IOracleAdminFork {
 
 interface IHookFeeRatePreviewFork {
     function feeRate(SwapParams calldata params) external view returns (uint24);
+}
+
+/// @dev Optional artifact declarations; check_hooks.py derives their presence from the ABI.
+interface ISwapAdmissionDeclarationsFork {
+    function requiredQuoteCurrency() external view returns (address);
+    function swapPassSigner() external view returns (address);
 }
 
 interface IContractOwnerFork {
@@ -68,6 +74,11 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
     address private creator;
     address private executor;
     IWETHFork private weth;
+    /// @dev The launch quote: wrapped native unless the artifact declares `requiredQuoteCurrency()`.
+    IERC20Fork private quote;
+    /// @dev Set when the artifact declares `swapPassSigner()`; buys then carry SwapPass hookData.
+    bool private swapPass;
+    uint256 private passNonce;
     ForkTrader private trader;
     uint16 private developerBps;
     address private collectorFactory;
@@ -101,6 +112,8 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
             .profileEnvelope(vm.parseJsonBytes32(manifest, ".referenceProfileId"));
         manager = IPoolManager(_address("manager"));
         weth = IWETHFork(_address("wrappedNative"));
+        quote = IERC20Fork(address(weth));
+        _adoptDeclaredSwapAdmission();
         developerBps = uint16(vm.envUint("HOOK_MAX_DEVELOPER_BPS"));
         uint16 cardinality = uint16(vm.envUint("HOOK_MAX_ORACLE_CARDINALITY"));
         oracleId = keccak256(abi.encode(uint24(17), cardinality));
@@ -128,9 +141,12 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         trader = new ForkTrader(manager);
         vm.deal(creator, 3_000 ether);
         vm.startPrank(creator);
-        weth.deposit{value: 2_000 ether}();
-        assertTrue(weth.approve(core.fundingEscrow(), type(uint256).max));
-        assertTrue(weth.approve(address(trader), type(uint256).max));
+        if (address(quote) == address(weth)) weth.deposit{value: 2_000 ether}();
+        vm.stopPrank();
+        if (address(quote) != address(weth)) deal(address(quote), creator, 2_000 ether);
+        vm.startPrank(creator);
+        assertTrue(quote.approve(core.fundingEscrow(), type(uint256).max));
+        assertTrue(quote.approve(address(trader), type(uint256).max));
         vm.stopPrank();
     }
 
@@ -178,8 +194,8 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         assertEq(received.lpFeesCollected, 0);
         assertEq(received.authorPaid, received.expectedAuthorPaid);
         assertEq(received.ownerPaid, received.expectedOwnerPaid);
-        assertEq(weth.balanceOf(payout), received.authorPaid);
-        assertEq(weth.balanceOf(author), 0, "stable identity is not the payout destination");
+        assertEq(quote.balanceOf(payout), received.authorPaid);
+        assertEq(quote.balanceOf(author), 0, "stable identity is not the payout destination");
     }
 
     function testConfiguredZeroHookFeeIsFree() public {
@@ -215,9 +231,10 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         SwapParams memory params = SwapParams(true, -int256(1 ether), TickMath.MIN_SQRT_PRICE + 1);
         vm.expectRevert();
         IHookFeeRatePreviewFork(received.hook).feeRate(params);
+        bytes memory hookData = _swapHookData(key, params);
         vm.prank(creator);
         vm.expectRevert();
-        trader.trade(key, params);
+        trader.trade(key, params, hookData);
         assertEq(IERC20Fork(Currency.unwrap(key.currency0)).balanceOf(creator), beforeBalances.amount0);
         assertEq(IERC20Fork(Currency.unwrap(key.currency1)).balanceOf(creator), beforeBalances.amount1);
         _assertHookFeeBacking(manager, key);
@@ -264,7 +281,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
                 mode, 1_400_001 + i, minimums[i], maximums[i], sensitivities[i]
             );
             PoolKey memory key = ILaunchHookV1(received.hook).poolKey(received.poolId);
-            bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+            bool buyBase = Currency.unwrap(key.currency0) == address(quote);
             uint24 fast = _trade(key, buyBase, -int256(1 ether));
             vm.warp(block.timestamp + 120);
             uint24 idle = _trade(key, buyBase, -int256(1 ether));
@@ -349,7 +366,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
             uint256 snapshot = vm.snapshotState();
             (,, PoolKey memory key) = _launchWithPolicy(mode, 1_700_001 + mode, 750, 10_000, 3_000, false);
             _settleControlledPool(key);
-            bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+            bool buyBase = Currency.unwrap(key.currency0) == address(quote);
             _prepareRise(key, 80, 12);
             // Flat raw spot does not mean a flat truncated signal: it catches up by 17 ticks.
             uint24[6] memory expected = [uint24(2_875), 2_875, 2_875, 2_875, 2_250, 750];
@@ -370,7 +387,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
     }
 
     function _settleControlledPool(PoolKey memory key) private {
-        bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+        bool buyBase = Currency.unwrap(key.currency0) == address(quote);
         // One-sided launch liquidity starts at a range boundary. Enter it with a real swap.
         assertEq(_trade(key, buyBase, -int256(1e12)),
             PoolBoundLaunchHookBaseV2(address(key.hooks)).minimumHookFeePips(), "genuine warm-up charge");
@@ -382,7 +399,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
     }
 
     function _prepareRise(PoolKey memory key, int24 rise, uint32 interval) private {
-        bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+        bool buyBase = Currency.unwrap(key.currency0) == address(quote);
         assertEq(_moveToNormalizedTick(key, 32 + rise),
             PoolBoundLaunchHookBaseV2(address(key.hooks)).minimumHookFeePips(),
             "a quiet price-moving swap charges the minimum, not its own impact");
@@ -396,7 +413,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
     }
 
     function _moveToNormalizedTick(PoolKey memory key, int24 normalizedTick) private returns (uint24 rate) {
-        bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+        bool buyBase = Currency.unwrap(key.currency0) == address(quote);
         int24 rawTick = buyBase ? -normalizedTick : normalizedTick;
         // Mid-tick target avoids a one-tick ambiguity from exact-output integer rounding.
         uint160 target = uint160((uint256(TickMath.getSqrtPriceAtTick(rawTick))
@@ -449,7 +466,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
     function _assertReplayedCharge(PoolKey memory key, uint256 snapshot, uint32 idle, uint256 expected)
         private returns (uint24 actual)
     {
-        bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+        bool buyBase = Currency.unwrap(key.currency0) == address(quote);
         actual = _tradeAfter(key, buyBase, -int256(1e12), idle);
         assertEq(actual, expected, "charged fee must match controlled movement and total elapsed age");
         require(vm.revertToState(snapshot), "replay identical observed signal");
@@ -619,7 +636,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
             if ((vm.envUint("HOOK_FEE_MODE_FLAGS") & (uint256(1) << mode)) == 0) continue;
             uint256 snapshot = vm.snapshotState();
             (,, PoolKey memory key) = _launchWithPolicy(mode, 2_100_001 + mode, 750, 10_000, 3_000, false);
-            bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+            bool buyBase = Currency.unwrap(key.currency0) == address(quote);
             ILaunchHookOracleV1 oracle = ILaunchHookOracleV1(address(key.hooks));
             bytes32 id = PoolId.unwrap(key.toId());
             for (uint256 i; i < 4; ++i) {
@@ -653,7 +670,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
     function _assertContinuousTrades(PoolKey memory key) private {
         uint256[5] memory sizes = [uint256(1e12), 1e15, 1e17, 1 ether, 5 ether];
         uint32[8] memory delays = [uint32(1), 1, 2, 1, 3, 5, 1, 7];
-        bool buyBase = Currency.unwrap(key.currency0) == address(weth);
+        bool buyBase = Currency.unwrap(key.currency0) == address(quote);
         uint256[] memory rates = new uint256[](64);
         uint256 rises;
         uint256 falls;
@@ -780,6 +797,87 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         }
     }
 
+    /// @dev Declared admission. A required quote replaces wrapped native as the launch quote.
+    ///      A declared pass authority is replaced, on this fork only, by a permissive ERC-1271
+    ///      account so the shared scenarios can trade; the gate test below removes it again.
+    function _adoptDeclaredSwapAdmission() private {
+        bool requiredQuote = vm.envOr("HOOK_REQUIRED_QUOTE", false);
+        swapPass = vm.envOr("HOOK_SWAP_PASS", false);
+        if (!requiredQuote && !swapPass) return;
+        address probe = makeAddr("declared runtime probe");
+        vm.etch(probe, vm.getDeployedCode(vm.envString("HOOK_ARTIFACT")));
+        if (requiredQuote) {
+            quote = IERC20Fork(ISwapAdmissionDeclarationsFork(probe).requiredQuoteCurrency());
+            assertGt(address(quote).code.length, 0, "declared quote must be a deployed token");
+        }
+        if (swapPass) {
+            address authority = ISwapAdmissionDeclarationsFork(probe).swapPassSigner();
+            assertTrue(authority != address(0), "declared pass authority must be nonzero");
+            vm.etch(authority, address(new PermissiveSignatureAuthorityFork()).code);
+        }
+        vm.etch(probe, "");
+    }
+
+    /// @dev SwapPass hookData convention: abi.encode(uint256 maxQuoteIn, bytes32 nonce,
+    ///      uint256 deadline, bytes signature). Only quote-in swaps carry one.
+    function _swapHookData(PoolKey memory key, SwapParams memory params) private returns (bytes memory) {
+        if (!swapPass || params.zeroForOne != (Currency.unwrap(key.currency0) == address(quote))) return "";
+        return abi.encode(type(uint256).max, bytes32(++passNonce), block.timestamp, new bytes(0));
+    }
+
+    function testDeclaredRequiredQuoteRejectsOtherQuotes() public {
+        vm.skip(!vm.envOr("HOOK_REQUIRED_QUOTE", false));
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        IERC20Fork required = quote;
+        quote = IERC20Fork(address(weth));
+        LaunchPlanV1 memory plan = _planWithFees(mode, 1_900_001, developerBps, 10_000);
+        quote = required;
+        (PoolBoundHookParametersV2 memory parameters, bytes32 salt) =
+            adapter.collectorFactory().poolBoundHookParameters(address(adapter), core.predictToken(plan), plan.markets[0]);
+        vm.expectRevert();
+        deployer.deploy(parameters, salt);
+    }
+
+    function testDeclaredSwapPassGatesOnlyBuysAfterOpening() public {
+        vm.skip(!swapPass);
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        // The opening buy inside activation is admitted without a pass.
+        (LaunchReceiptV1 memory receipt, PreparedMarketV1 memory prepared, PoolKey memory key) =
+            _launchWithPolicy(mode, 2_000_001, 750, 10_000, 15_000, true);
+        bool buy = Currency.unwrap(key.currency0) == address(quote);
+        uint160 buyLimit = buy ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1;
+        uint160 sellLimit = buy ? TickMath.MAX_SQRT_PRICE - 1 : TickMath.MIN_SQRT_PRICE + 1;
+        SwapParams memory buyParams = SwapParams(buy, -int256(1 ether), buyLimit);
+        SwapParams memory sellParams = SwapParams(!buy, -int256(1 ether), sellLimit);
+        vm.startPrank(creator, creator);
+        vm.expectRevert();
+        trader.trade(key, buyParams, "");
+        trader.trade(key, sellParams, "");
+        bytes memory pass = abi.encode(type(uint256).max, bytes32(uint256(77)), block.timestamp, new bytes(0));
+        trader.trade(key, buyParams, pass);
+        vm.expectRevert();
+        trader.trade(key, buyParams, pass);
+        vm.expectRevert();
+        trader.trade(key, buyParams, abi.encode(type(uint256).max, bytes32(uint256(78)), block.timestamp - 1, new bytes(0)));
+        // A bounded pass admits exact input up to its bound only.
+        vm.expectRevert();
+        trader.trade(key, buyParams, abi.encode(uint256(1 ether) - 1, bytes32(uint256(79)), block.timestamp, new bytes(0)));
+        trader.trade(key, buyParams, abi.encode(uint256(1 ether), bytes32(uint256(80)), block.timestamp, new bytes(0)));
+        SwapParams memory exactOutBuy = SwapParams(buy, int256(1 ether), buyLimit);
+        vm.expectRevert();
+        trader.trade(key, exactOutBuy, abi.encode(uint256(10 ether), bytes32(uint256(81)), block.timestamp, new bytes(0)));
+        vm.stopPrank();
+        // Without the fork-only permissive authority an unsigned pass is refused; sells still clear.
+        vm.etch(ISwapAdmissionDeclarationsFork(prepared.identity.hook).swapPassSigner(), "");
+        vm.startPrank(creator, creator);
+        vm.expectRevert();
+        trader.trade(key, buyParams, abi.encode(type(uint256).max, bytes32(uint256(82)), block.timestamp, new bytes(0)));
+        trader.trade(key, sellParams, "");
+        vm.stopPrank();
+        assertGt(IERC20Fork(receipt.token).balanceOf(creator), 0);
+        _assertHookFeeBacking(manager, key);
+    }
+
     function _predeployPlannedHook(LaunchPlanV1 memory plan) private returns (PoolBoundLaunchHookBaseV2) {
         (PoolBoundHookParametersV2 memory parameters, bytes32 salt) =
             adapter.collectorFactory().poolBoundHookParameters(address(adapter), core.predictToken(plan), plan.markets[0]);
@@ -805,7 +903,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         progress.phase = LaunchPhaseV1.Preparing;
         bytes memory contextReply = abi.encode(LaunchExecutionContextV1(
             launchId, 0, LaunchOperationV1.Prepare, address(adapter), address(adapter),
-            progress.token, address(weth), address(manager), address(0), address(0), 0
+            progress.token, address(quote), address(manager), address(0), address(0), 0
         ));
         bytes memory progressReply = abi.encode(progress);
         if (scenario == 0) {
@@ -1018,7 +1116,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         vm.startPrank(registry.admin());
         registry.registerAdapter(adapterId, address(adapter), envelope.capabilities, 6);
         registry.registerProfile(profileId, registration, envelope, nonce, deadline, abi.encodePacked(r, s, v));
-        if (!registry.fundingInputAllowed(address(weth))) registry.setFundingInputAllowed(address(weth), true);
+        if (!registry.fundingInputAllowed(address(quote))) registry.setFundingInputAllowed(address(quote), true);
         vm.stopPrank();
     }
 
@@ -1037,15 +1135,15 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
     {
         (LaunchReceiptV1 memory receipt, PreparedMarketV1 memory prepared, PoolKey memory key) =
             _launchWithPolicy(mode, nonce, minimum, hookPips, sensitivity, true);
-        _trade(key, prepared.identity.currency0 == address(weth), -int256(10 ether));
+        _trade(key, prepared.identity.currency0 == address(quote), -int256(10 ether));
         _trade(key, prepared.identity.currency0 == receipt.token, -int256(5 ether));
-        _trade(key, prepared.identity.currency0 == address(weth), int256(1 ether));
+        _trade(key, prepared.identity.currency0 == address(quote), int256(1 ether));
         _trade(key, prepared.identity.currency0 == receipt.token, int256(1 ether));
         vm.prank(creator);
-        assertTrue(weth.transfer(prepared.identity.hook, 17));
+        assertTrue(quote.transfer(prepared.identity.hook, 17));
         _assertHookFeeBacking(manager, key);
         received = _harvestAndClaim(receipt, prepared, key);
-        assertEq(weth.balanceOf(prepared.identity.hook), 17, "donations must not become fees");
+        assertEq(quote.balanceOf(prepared.identity.hook), 17, "donations must not become fees");
         received.tradeCount = 4;
     }
 
@@ -1131,21 +1229,21 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         config.developerFeeBps = selectedAuthorBps;
         config.positions = new V4PositionConfigV1[](1);
         int24 edge = (TickMath.MAX_TICK / config.tickSpacing) * config.tickSpacing;
-        config.positions[0] = V4PositionConfigV1(token < address(weth) ? int24(0) : -edge, token < address(weth) ? edge : int24(0), 1_000 ether, bytes32(uint256(1)), 1_000 ether);
+        config.positions[0] = V4PositionConfigV1(token < address(quote) ? int24(0) : -edge, token < address(quote) ? edge : int24(0), 1_000 ether, bytes32(uint256(1)), 1_000 ether);
         plan.markets = new MarketConfigV1[](1);
-        plan.markets[0] = MarketConfigV1(adapterId, profileId, address(weth), 1_100 ether, 6, abi.encode(config));
+        plan.markets[0] = MarketConfigV1(adapterId, profileId, address(quote), 1_100 ether, 6, abi.encode(config));
         PoolBoundHookParametersV2 memory parameters;
         (parameters,) = adapter.collectorFactory().poolBoundHookParameters(address(adapter), token, plan.markets[0]);
         config.hookSalt = _mine(address(deployer), deployer.initCodeHash(parameters));
         plan.markets[0].config = abi.encode(config);
         assertEq(core.predictToken(plan), token);
         plan.funding = new AssetFundingV1[](1);
-        plan.funding[0] = AssetFundingV1(address(weth), 497 ether, FundingKindV1.ERC20, address(weth), 497 ether, address(0), "");
+        plan.funding[0] = AssetFundingV1(address(quote), 497 ether, FundingKindV1.ERC20, address(quote), 497 ether, address(0), "");
         plan.buys = new InitialBuyV1[](1);
-        plan.buys[0] = InitialBuyV1(0, 200 ether, 1, creator, address(weth) < token ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
+        plan.buys[0] = InitialBuyV1(0, 200 ether, 1, creator, address(quote) < token ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
         plan.feeAssets = new FeeAssetPolicyV2[](2);
-        plan.feeAssets[0] = FeeAssetPolicyV2(token < address(weth) ? token : address(weth), 10_000, 0, 0);
-        plan.feeAssets[1] = FeeAssetPolicyV2(token < address(weth) ? address(weth) : token, 10_000, 0, 0);
+        plan.feeAssets[0] = FeeAssetPolicyV2(token < address(quote) ? token : address(quote), 10_000, 0, 0);
+        plan.feeAssets[1] = FeeAssetPolicyV2(token < address(quote) ? address(quote) : token, 10_000, 0, 0);
     }
 
     function _trade(PoolKey memory key, bool zeroForOne, int256 amount) private returns (uint24) {
@@ -1163,7 +1261,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         OracleBefore memory oracleBefore = _oracleBeforeSwap(key);
         emit log_named_uint("hook rate pips", fee.rate);
         vm.prank(creator);
-        BalanceDelta delta = trader.trade(key, params);
+        BalanceDelta delta = trader.trade(key, params, _swapHookData(key, params));
         _assertSwapAccounting(manager, key, address(trader), creator, beforeBalances, delta);
         _assertTradeFee(key, params, delta, fee);
         _assertOracleAfterSwap(key, oracleBefore);
@@ -1238,7 +1336,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         assertEq(index, uint32(block.timestamp) == beforeOracle.timestamp
             ? beforeOracle.index : (beforeOracle.index + 1) % cardinality,
             "only a distinct timestamp may append genuine history");
-        assertEq(tick, _expectedOracleTick(beforeOracle, Currency.unwrap(key.currency0) == address(weth)));
+        assertEq(tick, _expectedOracleTick(beforeOracle, Currency.unwrap(key.currency0) == address(quote)));
         (uint32 timestamp, int56 ticks, uint160 liquidity, bool initialized) = oracle.observations(id, index);
         assertEq(timestamp, uint32(block.timestamp));
         assertTrue(initialized);
@@ -1260,13 +1358,13 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         PoolKey memory key = ILaunchHookV1(received.hook).poolKey(received.poolId);
         OracleBefore memory beforeOracle = _oracleBeforeSwap(key);
         {
-            bool zeroForOne = Currency.unwrap(key.currency0) == address(weth);
+            bool zeroForOne = Currency.unwrap(key.currency0) == address(quote);
             SwapParams memory params = SwapParams(zeroForOne, -int256(1 ether),
                 zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
             TradeFee memory beforeFee = _tradeFeeBefore(key, params);
             SwapBalances memory balances = _snapshotSwapBalances(key, creator);
             vm.prank(creator);
-            BalanceDelta delta = trader.trade(key, params);
+            BalanceDelta delta = trader.trade(key, params, _swapHookData(key, params));
             _assertSwapAccounting(manager, key, address(trader), creator, balances, delta);
             _assertTradeFee(key, params, delta, beforeFee);
             rate = beforeFee.rate;
@@ -1396,7 +1494,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
 
     function _liquidity(PoolKey memory key, address token) private view returns (uint128) {
         int24 edge = (TickMath.MAX_TICK / key.tickSpacing) * key.tickSpacing;
-        bytes32 positionKey = Position.calculatePositionKey(address(locker), token < address(weth) ? int24(0) : -edge, token < address(weth) ? edge : int24(0), bytes32(uint256(1)));
+        bytes32 positionKey = Position.calculatePositionKey(address(locker), token < address(quote) ? int24(0) : -edge, token < address(quote) ? edge : int24(0), bytes32(uint256(1)));
         return StateLibrary.getPositionLiquidity(manager, key.toId(), positionKey);
     }
 
@@ -1405,8 +1503,8 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         ILaunchHookV1 hook = ILaunchHookV1(prepared.identity.hook);
         uint128 principal = _liquidity(key, receipt.token);
         assertGt(principal, 0);
-        uint256 grossHook = hook.pendingFees(prepared.identity.poolId, address(weth));
-        uint256 treasuryDue = hook.pendingTreasurySweeps(prepared.identity.poolId, address(weth));
+        uint256 grossHook = hook.pendingFees(prepared.identity.poolId, address(quote));
+        uint256 treasuryDue = hook.pendingTreasurySweeps(prepared.identity.poolId, address(quote));
         FeePreview[] memory fees = _preview(prepared, address(hub));
         for (uint256 i; i < fees.length; ++i) {
             assertEq(
@@ -1422,7 +1520,7 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         received.poolId = prepared.identity.poolId;
         for (uint256 i; i < fees.length; ++i) {
             (uint256 ownerPaid, uint256 authorPaid) = _claimAsset(hub, fees[i]);
-            if (fees[i].asset == address(weth)) {
+            if (fees[i].asset == address(quote)) {
                 received.treasuryPaid = IERC20Fork(fees[i].asset).balanceOf(envelope.protocolTreasury) - fees[i].treasuryBefore;
                 assertEq(received.treasuryPaid, treasuryDue);
                 received.ownerPaid = ownerPaid;
@@ -1465,7 +1563,9 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         vm.serializeAddress(object, "token", received.token);
         vm.serializeAddress(object, "hook", received.hook);
         vm.serializeBytes32(object, "poolId", received.poolId);
-        vm.serializeAddress(object, "quoteAsset", address(weth));
+        vm.serializeAddress(object, "quoteAsset", address(quote));
+        vm.serializeAddress(object, "requiredQuoteCurrency", vm.envOr("HOOK_REQUIRED_QUOTE", false)
+            ? ISwapAdmissionDeclarationsFork(received.hook).requiredQuoteCurrency() : address(0));
         vm.serializeUint(object, "treasuryPaid", received.treasuryPaid);
         vm.serializeUint(object, "ownerPaid", received.ownerPaid);
         vm.serializeUint(object, "authorPaid", received.authorPaid);

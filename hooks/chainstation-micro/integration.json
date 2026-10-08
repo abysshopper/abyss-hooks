@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "kind": "submission",
+  "authorId": "0x41899a611ECB567a167A88C2a6330792923dCc8C",
+  "developerFeeBps": 0,
+  "swapFeeModel": "static",
+  "terms": "Chainstation micro markets. Free hook (0 bps author share): Chainstation takes its platform share downstream as each launch's fee owner, not through the registry royalty. Static reference fee schedule in QuoteOnly mode. Pools must be quoted in CSX (0x30C8562dBb63B3FfD3a4230Dc5B370dE7E257F50); after opening, buys need a single-use EIP-712 SwapPass in hookData signed by 0x05cd4C5d7503cdEB0cB0f43E0537f52a1EB3C9F9 for the sending wallet; sells are never gated. authorId is Chainstation's platform wallet as a stable identity.",
+  "bounds": {
+    "minimumTickSpacing": 1,
+    "maximumTickSpacing": 32767,
+    "maximumPositions": 32,
+    "maximumOracleCardinality": 4096,
+    "feeModeFlags": 2
+  }
+}

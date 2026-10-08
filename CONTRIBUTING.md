@@ -71,6 +71,15 @@ For a dynamic hook, explicitly return `SwapFeeModel.Dynamic` and implement the r
 
 [`DynamicFeeHook`](hooks/dynamic-fee/DynamicFeeHook.sol) raises fees with observed upward quote-per-base tick velocity, not trade size. For creator-selected minimum `m`, maximum `M`, sensitivity `G` in fee-pips × seconds/tick, positive observed tick change `D`, and age-adjusted elapsed seconds `E`, the rate is `min(M, m + floor(G * D / E))`. Warm-up, flat/falling observations or missing elapsed time use `m`; idle time reduces the uplift. Zero `G` fixes the rate at `m`, and maximum zero is free. There is no maximum-derived baseline or fixed response period. Exact input/output and both fee modes use the same schedule. The [example review](hooks/dynamic-fee/review.md) defines measurement, rounding and risks.
 
+### Optional admission declarations
+
+A hook may refuse some swaps from the existing `_onBeforeSwap` seam, which the base reaches only from `beforeSwap`, before LP checkpoints and fee accrual. That seam has no swap arguments; inside it `msg.data` is still the manager's `beforeSwap` calldata. No base change is involved.
+
+Qualification derives two optional declarations from the compiled ABI, as it does for the oracle:
+
+- `requiredQuoteCurrency() returns (address)`: the harness launches with that token instead of WETH, funded on the fork with `deal`, and checks that a hook built for WETH is rejected. Receipt evidence must report that quote.
+- `swapPassSigner() returns (address)`: on the fork only, the harness etches a permissive ERC-1271 account at that address and attaches `abi.encode(uint256 maxQuoteIn, bytes32 nonce, uint256 deadline, bytes signature)` hookData to quote-in swaps. A gate test then checks that unpassed buys revert, sells stay open, nonces are single-use, deadlines and bounds apply, and an unsigned pass fails once the permissive account is removed.
+
 ### Provided accounting
 
 The base supplies lifecycle checks, permanent LP custody, V4 swap deltas, ERC6909 claims, cash settlement, treasury liabilities and collector-only redemption. Contributors do not reimplement these layers. The static example stays core-only; the dynamic example explicitly composes the optional oracle.

@@ -470,6 +470,35 @@ class ReceiptEvidenceBoundaries(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "canonical uint256"):
                     self.parse()
 
+    def test_declared_required_quote_replaces_weth_only_when_declared(self):
+        csx = "0x" + "66" * 20
+        self.receipt.update(quoteAsset=csx, requiredQuoteCurrency=csx)
+        self.path.write_text(json.dumps(self.receipt))
+        self.assertEqual(checks.receipt_evidence(self.path, self.manifest, self.declared, True)["quoteAsset"], csx)
+        with self.assertRaisesRegex(ValueError, "Undeclared required quote"):
+            self.parse()
+        self.receipt["requiredQuoteCurrency"] = "0x" + "77" * 20
+        self.path.write_text(json.dumps(self.receipt))
+        with self.assertRaisesRegex(ValueError, "declared required quote"):
+            checks.receipt_evidence(self.path, self.manifest, self.declared, True)
+        self.receipt.pop("requiredQuoteCurrency")
+        self.path.write_text(json.dumps(self.receipt))
+        with self.assertRaisesRegex(ValueError, "missing from receipt"):
+            checks.receipt_evidence(self.path, self.manifest, self.declared, True)
+
+    def test_unset_required_quote_keeps_weth_rule(self):
+        self.receipt["requiredQuoteCurrency"] = "0x" + "00" * 20
+        self.assertEqual(self.parse()["quoteAsset"], self.manifest["addresses"]["wrappedNative"])
+
+    def test_declared_views_require_exact_shape(self):
+        good = {"type": "function", "name": "swapPassSigner", "inputs": [], "stateMutability": "pure",
+                "outputs": [{"type": "address"}]}
+        self.assertTrue(checks.declared_view([good], "swapPassSigner"))
+        for change in ({"inputs": [{"type": "uint256"}]}, {"stateMutability": "nonpayable"},
+                       {"outputs": [{"type": "bytes32"}]}, {"name": "other"}):
+            with self.subTest(change=change):
+                self.assertFalse(checks.declared_view([{**good, **change}], "swapPassSigner"))
+
 
 if __name__ == "__main__":
     unittest.main()

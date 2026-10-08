@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "name": "chainstation-micro",
+  "topology": "PoolBoundV4",
+  "source": "ChainstationMicroHook.sol",
+  "contract": "ChainstationMicroHook",
+  "license": "MIT"
+}

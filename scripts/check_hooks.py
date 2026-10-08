@@ -203,7 +203,17 @@ def check_fork_graph(manifest, rpc, output, env):
     save_json(output / "fork-code-evidence.json", evidence)
 
 
-def receipt_evidence(path, manifest, declared):
+def declared_view(abi, name):
+    """True when the ABI exposes `name()` as a no-argument view returning one address."""
+    return any(
+        item.get("type") == "function" and item.get("name") == name and not item.get("inputs")
+        and item.get("stateMutability") in ("view", "pure")
+        and [output["type"] for output in item.get("outputs", [])] == ["address"]
+        for item in abi
+    )
+
+
+def receipt_evidence(path, manifest, declared, required_quote=False):
     require(path.is_file() and not path.is_symlink(), "Missing real launch receipt evidence after forge test")
     receipt = json.loads(path.read_text(), object_pairs_hook=unique_object)
     require(receipt["schema"] == "abyss-hooks.launch-receipts.v1", "Wrong launch receipt schema")
@@ -212,7 +222,16 @@ def receipt_evidence(path, manifest, declared):
                 f"Invalid receipt identity: {name}")
     require(isinstance(receipt["poolId"], str) and re.fullmatch(r"0x[0-9a-fA-F]{64}", receipt["poolId"]) and int(receipt["poolId"], 16),
             "Invalid receipt poolId")
-    require(receipt["quoteAsset"].lower() == manifest["addresses"]["wrappedNative"].lower(), "Receipt quote differs from pinned WETH")
+    required = receipt.get("requiredQuoteCurrency")
+    if required_quote:
+        # Declared by the artifact's ABI and read back from the deployed hook by the harness.
+        require(isinstance(required, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", required) and int(required, 16),
+                "Declared required quote missing from receipt")
+        require(receipt["quoteAsset"].lower() == required.lower(), "Receipt quote differs from declared required quote")
+    else:
+        require(required is None or (isinstance(required, str) and re.fullmatch(r"0x0{40}", required)),
+                "Undeclared required quote in receipt")
+        require(receipt["quoteAsset"].lower() == manifest["addresses"]["wrappedNative"].lower(), "Receipt quote differs from pinned WETH")
     for name in ("treasuryPaid", "ownerPaid", "authorPaid", "hookFeesCollected", "lpFeesCollected",
                  "tradeCount", "developerFeeBps", "authorFeeBps", "swapFeeModel", "expectedAuthorPaid", "expectedOwnerPaid"):
         require(name in receipt, f"Missing receipt field: {name}")
@@ -339,6 +358,14 @@ def qualify(output, rows, *, rpc_url=None):
             )
             env["HOOK_HAS_ORACLE"] = "true" if has_oracle else "false"
             inputs["HOOK_HAS_ORACLE"] = has_oracle
+            # Optional swap-admission declarations, also ABI-derived: a required quote currency
+            # replaces WETH as the launch quote; a pass authority makes buys carry SwapPass hookData.
+            required_quote = declared_view(abi, "requiredQuoteCurrency")
+            swap_pass = declared_view(abi, "swapPassSigner")
+            env["HOOK_REQUIRED_QUOTE"] = "true" if required_quote else "false"
+            env["HOOK_SWAP_PASS"] = "true" if swap_pass else "false"
+            inputs["HOOK_REQUIRED_QUOTE"] = required_quote
+            inputs["HOOK_SWAP_PASS"] = swap_pass
             # Economic vectors apply only to this repository's oracle-velocity reference,
             # not arbitrary admitted dynamic policies. Feature support remains ABI-derived.
             velocity_example = folder == ROOT / "hooks/dynamic-fee" and row["contract"] == "DynamicFeeHook"
@@ -360,7 +387,7 @@ def qualify(output, rows, *, rpc_url=None):
             require(hashlib.sha256(selected.read_bytes()).hexdigest() == measured["fileSha256"], "Selected artifact changed during execution")
             require(hashlib.sha256(manifest_path.read_bytes()).hexdigest() == manifest_hash, "Fork manifest changed during execution")
             require(hashlib.sha256(candidate_manifest.read_bytes()).hexdigest() == manifest_hash, "Candidate fork manifest changed during execution")
-            evidence = receipt_evidence(receipts, manifest, report["declared"])
+            evidence = receipt_evidence(receipts, manifest, report["declared"], required_quote)
             result.update(locallyQualified=True, receiptEvidence=evidence,
                           receiptEvidenceFileSha256=hashlib.sha256(receipts.read_bytes()).hexdigest())
             report["runtimeQualification"] = {

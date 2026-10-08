@@ -31,3 +31,18 @@ Additional [granular regressions](hooks/dynamic-fee/review.md#granular-boundarie
 CI uses the [dRPC public Robinhood endpoint](https://drpc.org/chainlist/robinhood-mainnet-rpc) because the default public RPC can reject fork reads with a Cloudflare challenge. Local qualification accepts `--rpc-url https://robinhood.drpc.org`; the chain ID, fork block and deployed-code hash checks remain mandatory, and evidence records the selected endpoint.
 
 Maintainers review each submission. Production registry admission requires separate approval.
+
+## AI agent guidance
+
+[AGENTS.md](AGENTS.md) and the portable skills in `.agents/skills/` are generated with [rulesync](https://rulesync.dyoshikawa.com/). The skills cover hook authoring, qualification/review, and rulesync maintenance.
+
+Edit `.rulesync/rules/overview.md` or `.rulesync/skills/<name>/SKILL.md`, not the generated files. With Node.js 22 or later, regenerate and check for drift from the repository root:
+
+```sh
+npx --yes rulesync@27.0.0 generate
+npx --yes rulesync@27.0.0 generate --check
+```
+
+Commit `.rulesync/`, `rulesync.jsonc`, `AGENTS.md`, and `.agents/skills/` together so guidance works on a fresh checkout. `rulesync.jsonc` enables only the AGENTS.md and Agent Skills standards; no MCP servers, automatic command hooks, or permissions are configured. Personal overrides go in ignored `rulesync.local.jsonc`.
+
+Generation does not delete existing files. When removing or renaming a canonical skill, explicitly remove its obsolete generated copy. Do not run `rulesync gitignore`, which would ignore outputs this repository intentionally commits.

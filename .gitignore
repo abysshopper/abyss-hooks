@@ -6,3 +6,4 @@ contracts/lib/
 out/
 cache/
 broadcast/
+rulesync.local.jsonc

@@ -38,6 +38,8 @@ Read `README.md`, the relevant sections of `CONTRIBUTING.md`, and `SECURITY.md` 
 
 Prefer existing contracts and fixtures over reimplementing accounting or lifecycle logic. Keep changes scoped; preserve unrelated work. Update declarations and review evidence when changing a hook's formula, ABI, dependencies, authority, or economic terms.
 
+Before opening a PR or pushing updates to an existing PR, read and apply the [pr-review](.agents/skills/pr-review/SKILL.md) skill to the complete proposed diff against the target base. Fix actionable findings and disclose missing verification before publishing. After pushing, inspect exact-head CI and evidence before requesting acceptance; self-review does not replace independent maintainer review.
+
 Use Python 3.12 and Foundry `nightly-5e88010a83d1b87b8f4d13058e42a2949d3e9dc0`. The pinned compiler is Solidity 0.8.28, Cancun, optimizer runs 1, no via-IR or bytecode metadata. EIP-170 runtime and initcode limits are 24,576 and 49,152 bytes.
 
 Run the relevant checks from the repository root:
@@ -65,5 +67,6 @@ Read the matching skill before starting its workflow:
 
 - [hook-authoring](.agents/skills/hook-authoring/SKILL.md): create or change a submission, its fee policy, manifests, and review.
 - [hook-qualification](.agents/skills/hook-qualification/SKILL.md): validate submissions, investigate qualification failures, or review registration evidence.
-- [pr-review](.agents/skills/pr-review/SKILL.md): review a submission pull request for ownership scope, CI coverage, and declared-versus-proven claims.
+- [pr-review](.agents/skills/pr-review/SKILL.md): review submissions and self-review the complete diff before opening or updating a PR.
+- [hook-security-review](.agents/skills/hook-security-review/SKILL.md): perform an audit-informed V4 hook security review using official documentation, public audits, and executable evidence; not an independent audit or certification.
 - [rulesync-maintenance](.agents/skills/rulesync-maintenance/SKILL.md): change agent guidance, skills, targets, or generated outputs.

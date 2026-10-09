@@ -34,7 +34,7 @@ Maintainers review each submission. Production registry admission requires separ
 
 ## AI agent guidance
 
-[AGENTS.md](AGENTS.md) and the portable skills in `.agents/skills/` are generated with [rulesync](https://rulesync.dyoshikawa.com/). The skills cover hook authoring, qualification/review, and rulesync maintenance.
+[AGENTS.md](AGENTS.md) and the portable skills in `.agents/skills/` are generated with [rulesync](https://rulesync.dyoshikawa.com/). The skills cover hook authoring, qualification, PR review, audit-informed V4 hook security review, and rulesync maintenance. Authoring and security-review guidance link official Uniswap documentation and publicly available audits; using them does not constitute an independent audit. Apply the [PR review skill](.agents/skills/pr-review/SKILL.md) to the complete diff before opening a PR or pushing updates; self-review does not replace independent maintainer review or exact-head CI.
 
 Edit `.rulesync/rules/overview.md` or `.rulesync/skills/<name>/SKILL.md`, not the generated files. With Node.js 22 or later, regenerate and check for drift from the repository root:
 

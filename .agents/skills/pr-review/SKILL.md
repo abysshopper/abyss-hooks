@@ -1,11 +1,20 @@
 ---
 name: pr-review
 description: >-
-  Review an Abyss Hooks submission pull request: ownership scope, CI coverage,
-  declared-versus-proven claims, authority and liveness analysis. Use when
-  reviewing contributor hook PRs or registration evidence.
+  Review an Abyss Hooks submission pull request, including self-review before
+  opening or updating a PR: ownership scope, CI coverage, declared-versus-proven
+  claims, authority and liveness analysis. Use for contributor hook PRs and
+  registration evidence.
 ---
 # Submission PR review
+
+## Self-review before opening or updating
+
+Before opening a PR or pushing updates to an existing PR, review the complete proposed diff against its target base using this skill. Apply it to hook submissions; for maintainer infrastructure PRs, review the applicable verification, authority and reporting criteria without imposing hook-folder-only scope. Fix actionable findings before publishing. Re-review the complete diff after fixes, not just the latest patch.
+
+Use the `hook-qualification` skill for applicable checks. Report commands actually run, evidence paths, failures and missing prerequisites. Before opening, CI may not exist yet; disclose that rather than claiming it passed. After pushing, inspect exact-head Actions and their artifacts before requesting acceptance. Self-review does not replace independent maintainer review or successful exact-head CI.
+
+For technical hook auditing, apply the `hook-security-review` skill. Its official documentation and public-audit lessons supplement, not replace, repository-specific qualification and independent audits.
 
 ## Check ownership scope first
 
@@ -17,21 +26,21 @@ A submission pull request may only add or change files under its own `hooks/<slu
 
 If any of these appear in a submission diff, request a split regardless of code quality: the hook in one PR, the infrastructure capability in a separate maintainer-reviewed PR. A hook that cannot pass the unchanged harness must disclose that and wait for infrastructure to land first; bundling the harness change into the submission reverses the ownership direction.
 
-Verify the contributor's "no base change" claim rather than trusting it: `git diff <base> -- contracts/src` must be empty, and existing reference hooks must compile byte-identical (compare runtime and initcode SHA-256 against a clean base checkout).
+Verify the contributor's "no base change" claim rather than trusting it: `git diff <base> -- contracts/src` must be empty. When artifact stability is claimed, compare decoded runtime and initcode bytes against a clean base build using the pinned compiler profile.
 
 ## Require independent verification
 
-- CI must have run on the exact head commit. No reported checks means nothing is verified; never merge on local claims alone.
+- Acceptance requires successful CI on the exact head commit and inspection of its evidence. Missing checks or a run awaiting approval are not successful verification or observed code failures.
 - Separate declared inputs (`integration.json` values, terms, authorId) from proven behavior (qualification evidence). Declarations are proposals, not facts.
-- Reproduce locally when feasible: structure check, unit suite, and full fork qualification per the `hook-qualification` skill. Compare measured artifact sizes and hashes against the PR's claims.
-- Watch for coverage gaps the harness cannot see. Example: a fork-only permissive signature authority proves gating logic but not the real signature scheme—if the hook verifies EIP-712/ECDSA passes, require at least one end-to-end check against a real test key, not only an etched accept-all account.
+- Reproduce locally when feasible: structure check, unit suite, and full fork qualification per the `hook-qualification` skill. Compare measured artifact sizes and hashes against the PR's claims. Reuse applicable observed evidence only when code and inputs are unchanged; label reused evidence explicitly.
+- Watch for coverage gaps the harness cannot see. A fork-only permissive signature authority proves gating logic but not the real signature scheme. For EIP-712/ECDSA passes, require a genuinely signed end-to-end test using an independently constructed digest and a real test key, including buyer, domain, signed-field and replay rejection. Do not require or expose production private keys.
 
 ## Review authority and liveness
 
-For each external call, constant address, stored credential or signature check, answer: who can act, what happens if the key is lost, and what happens if it is compromised. Acceptable answers must be stated in `review.md`. Permanent loss of a non-custodial liveness gate (for example buys halted while sells and fee collection continue) may be acceptable when disclosed; undisclosed upgrade, sweep, or recipient-selection authority is not.
+For each external call, constant address, stored credential or signature check, answer: who can act, what happens if the key is lost, and what happens if it is compromised. State these risks in `review.md`. Disclosed non-custodial liveness gates may be acceptable; undisclosed upgrade, sweep, or recipient-selection authority is not. Check inherited and external halt conditions before claiming holders can always exit.
 
-Flag fragile coupling explicitly: reading another contract's calldata (`msg.data`), depending on `tx.origin`, or relying on a private-by-convention call path all couple the hook to the pinned base artifact. These are permissible only when the artifact is pinned and the failure mode degrades to a no-op rather than a false acceptance.
+Flag fragile coupling explicitly: decoding `msg.data`, depending on `tx.origin`, or relying on an internal call path couples the hook to the pinned artifact. Trace actual reachability and bypass conditions; artifact pinning alone does not prove safety. Distinguish a demonstrated bypass from a disclosed future-change risk.
 
 ## Report
 
-Record the decision against the exact head commit: accept into catalogue, request changes, or reject. List verified claims with evidence, unproven claims, scope violations, and required follow-ups. Catalogue acceptance is not production registry admission, an audit, or proof of `authorId` control.
+Record the decision against the exact head commit: accept into catalogue, request changes, or reject. For self-review, report readiness and unresolved findings without granting maintainer approval. List verified claims with evidence, unproven claims, scope violations, and required follow-ups. Catalogue acceptance is not production registry admission, an audit, or proof of `authorId` control.

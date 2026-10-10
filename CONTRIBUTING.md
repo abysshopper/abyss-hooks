@@ -12,10 +12,37 @@ Each folder must contain:
 | `integration.json` | Proposed registry inputs listed below |
 | `review.md` | Formula and rounding; boundary inputs/outputs; changes, dependencies, authority and risks; input rationale and verification evidence |
 | `*.sol` | Complete sources with matching SPDX headers |
+| `test/Smoke.t.sol` | Mandatory concrete `<contract>SmokeTest` inheriting `HookSmokeTest`, pointed at this hook's artifact |
+| `test/*.t.sol` | Additional policy-specific suites, such as `Policy.t.sol` or `Rate.t.sol`, where needed |
+| `provenance.json` | Optional compact record generated only by successful local qualification with `--record` |
 
-Additional local Solidity files are allowed. No nested directories, symlinks, scripts, generated artifacts or other file types. `source` must be a local filename. `@black-market/` maps to the shipped `contracts/src/` authoring code and interfaces; Uniswap and Solady remappings are also available.
+Production Solidity sources stay flat in `hooks/<slug>/`. The sole allowed subdirectory is `test/`, containing regular, flat Solidity files: mandatory `Smoke.t.sol`, optional policy suites and Solidity fixtures. No deeper directories, symlinks, scripts, generated artifacts or unknown file types are allowed; `provenance.json` is the explicit generated-record exception. `source` must be a local production filename. `@black-market/` maps to the shipped `contracts/src/` authoring code and interfaces; Uniswap and Solady remappings are also available.
 
 Submission pull requests may only add or change files under `hooks/<slug>/`. The shared test harness, tooling, catalogue tests, documentation and CI workflows are maintainer-owned; if a hook needs new harness capability, open an issue or a separate infrastructure pull request instead of bundling it into the submission.
+
+### Contributor smoke and policy tests
+
+Copy the reference's `test/` directory along with its sources. Rename the concrete smoke test to the `hook.json` contract name followed by `SmokeTest`, and pass the actual source/contract descriptor to the shared constructor. For the dynamic reference:
+
+```solidity
+import { HookSmokeTest } from "../../../contracts/test/HookSmokeTest.sol";
+
+contract DynamicFeeHookSmokeTest is HookSmokeTest {
+    constructor() HookSmokeTest("hooks/dynamic-fee/DynamicFeeHook.sol:DynamicFeeHook") {}
+}
+```
+
+Replace both names and the descriptor when authoring another hook. `HookSmokeTest` inherits `HookLaunchFixture`, which reuses the native launch graph, typed holder, CREATE2 deployment, lifecycle and accounting helpers. Setup resolves the runner-selected `HOOK_ARTIFACT` and checks its creation-code hash against the constructor's configured artifact. Do not override deployment or use `vm.etch` to substitute candidate code.
+
+All inherited public `testSmoke*` tests are nonvirtual and mandatory. The runner independently checks compiler-AST inheritance, derives required test names from the base ABI and requires each discovered result to be `Success`; missing, `Failure` or `Skipped` cases cannot qualify. Contributor setup, prerequisite overrides and mutable cheatcodes still need source review. These checks are not a sandbox or proof that arbitrary setup or runtime behavior is safe.
+
+Override `_configureScenario() internal returns (LaunchScenario memory)` and start from `_defaultScenario()` to keep useful defaults. Configure the quote token, raw-unit funding, supply, liquidity, opening price/ticks, creator fee settings, oracle settings, opening buy and trade amounts on the test side. Override `_setUpPrerequisites() internal` for existing policy dependencies and `_fundQuote(address payer, uint256 rawAmount) internal` when the configured quote needs custom funding. A signed policy can override `_swapHookData(PoolKey memory, SwapParams memory, address payer) internal returns (bytes memory)` with genuinely signed test data. `PoolKey` and `SwapParams` can be imported from `contracts/test/HookLaunchFixture.sol`. No production `requiredQuoteCurrency()` or `swapPassSigner()` getter is required for qualification.
+
+Where a policy intentionally refuses a swap branch, override `_expectedSwapRevert(PoolKey memory, SwapParams memory, address payer) internal view returns (bytes memory)` with the actual expected rejection; the shared check must observe that rejection and unchanged wallets/liabilities, never skip. Evaluate both directions and exact-input/output branches in each declared fee mode, and demonstrate actual successful trading under a valid scenario in every declared mode. A hook need not admit every amount mode. Free-fee hooks are valid; author bps must match the declaration exactly, not a universal 500 bps example.
+
+`LaunchScenario.preparedOracleCardinality` controls test-side capacity preparation without inventing observations. `_expectedZeroFeeLaunchRevert(LaunchPlanV1)` may return `(LaunchRefusalStage.Prepare | Activate, exactRevertBytes)` when a policy deliberately rejects the zero-fee configuration; empty bytes require the actual free-fee scenario to pass. This is test configuration, not a new production gate.
+
+Keep formula, rounding, oracle-curve, boundary, malformed-data and signature/replay evidence in separate policy `test/*.t.sol` suites, such as `Policy.t.sol` and `Rate.t.sol`. The runner discovers the selected hook's `test/` directory and runs smoke and policy suites with separate results/logs. Policy evidence supplements the shared invariants; it cannot override or replace them. The dynamic reference's curve tests are not a universal policy requirement. Additional harness capability remains a separate maintainer-owned infrastructure change.
 
 ### Integration inputs
 
@@ -106,7 +133,7 @@ The read-only `_oraclePriceMovement()` seam returns the latest truncated tick ch
 
 Under the unchanged pinned compiler profile, `ReferenceBoundHook` is 18,001 runtime bytes, `DynamicFeeHook` is 24,047, and the composed static fixture is 23,550. The dynamic example has **529 bytes** of EIP-170 headroom; additional policy code must be measured. Do not change the compiler profile or split deployment to evade the limit. Artifact changes require fresh qualification, approved hashes and newly mined salts.
 
-The runner separately reconstructs and launches the composed fixture, exercising genuine genesis, capped growth, normalized/clamped sampling, same-block swaps, stored and extrapolated accumulators, historical-query rejection and the same accounting/royalty checks as core-only hooks. The dynamic reference additionally proves a higher fee for observed rises, decay during idle time, and baseline fees after falling/flat observations. Those economic vectors are scoped to that example, not imposed on arbitrary dynamic policies.
+Maintainer checks separately reconstruct and launch the composed oracle fixture, exercising genuine genesis, capped growth, normalized/clamped sampling, same-block swaps, stored and extrapolated accumulators, historical-query rejection and the same accounting/royalty checks as core-only hooks. The dynamic reference's separate policy suites prove a higher fee for observed rises, decay during idle time, and baseline fees after falling/flat observations. Those economic vectors are scoped to that example, not imposed on arbitrary dynamic policies.
 
 
 ## Local checks
@@ -116,24 +143,40 @@ Use Python 3.12 and Foundry `nightly-5e88010a83d1b87b8f4d13058e42a2949d3e9dc0`. 
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r scripts/requirements.txt
-python -m unittest discover -s tests
-python scripts/check_hooks.py --structure-only --output evidence/structure
+python3.12 -m pip install -r scripts/requirements.txt
 scripts/install-deps.sh
-python scripts/check_hooks.py --output evidence/qualification
+python3.12 scripts/check_hooks.py --hook <slug> --output evidence/<unique-run> --rpc-url https://robinhood.drpc.org --record
 ```
 
-Use fresh evidence directories on subsequent runs. All hooks are checked. Compilation uses Solidity 0.8.28, Cancun, optimizer runs 1, no via-IR or bytecode metadata. Runtime/initcode limits are 24,576/49,152 bytes; measured sizes are included in qualification reports.
+Replace `<slug>` with the selected hook folder and `<unique-run>` with a fresh identifier. The selected hook's exact artifact, mandatory smoke suite and all policy suites must pass. The runner prints named tests/statuses and actual receipt summaries, and writes full logs, JSON and `RESULTS.md` in the ignored output directory. Smoke and policy evidence are separate. Failed, skipped, missing or incomplete mandatory results do not qualify; failed-run output is retained for diagnosis.
 
-Qualification resolves the public RPC's latest block once, records its number/hash, and verifies every deployed code hash. `--rpc-url` can select another Robinhood RPC. Replaying older evidence requires an archive endpoint.
+Compilation uses Solidity 0.8.28, Cancun, optimizer runs 1, no via-IR or bytecode metadata. Production hook runtime/initcode limits are 24,576/49,152 bytes; measured sizes are included in reports. Test-contract output is not the production portability artifact.
+
+Qualification resolves the public RPC's latest block once, records its number/hash, and verifies deployed code hashes. `--rpc-url` selects another Robinhood RPC without bypassing those checks. Replaying older evidence requires an archive endpoint.
+
+Maintainer infrastructure checks include `python3.12 -m unittest discover -s tests`, `python3.12 scripts/check_hooks.py --structure-only --output evidence/structure-<unique-run>`, and catalogue-wide qualification by omitting `--hook`. Structure-only checks do not compile or qualify a hook. Internal oracle/custom-adapter fixture runs are maintainer checks, not catalogue submissions.
+
+### Commit-ready provenance
+
+`--record` is optional and writes only `hooks/<slug>/provenance.json` after successful full qualification. It never runs `git commit` or `git push`. A failed or incomplete run cannot publish a success record or overwrite an existing one; an old record is not evidence that a failed new run qualified.
+
+The compact record binds source and test bytes, harness/protocol dependencies and tool identity to measured artifact identity, fork chain/block/hash, named test outcomes and actual launch receipts. It includes source-commit identity with a working-tree caveat; file hashes, not HEAD alone, identify what ran. The record excludes itself from source hashes.
+
+Review the record and reports before staging. Commit the selected `hooks/<slug>/provenance.json` with the matching sources, tests, manifests and `review.md`, and reference that compact file in the GitHub PR. Do not commit the full ignored evidence directory, credential-bearing logs, wallet keys or production admission secrets.
+
+```bash
+python3.12 scripts/check_hooks.py --hook <slug> --check-provenance
+```
+
+This checks recorded source, test, harness and tool identity freshness without rerunning chain behavior. A fresh identity check is not a new fork run, a current-chain guarantee or a signed attestation. Changed inputs need new full qualification with a fresh output directory and a reviewed replacement record.
 
 ## PR review
 
 Use the [PR template](.github/pull_request_template.md). Automatic GitHub CI is temporarily paused. Do not start or wait for a run during the pause; report the applicable local checks and explicitly disclose that CI did not run. After CI is re-enabled, inspect the exact-head run before acceptance.
 
-Review `PR-REVIEW.md` and `<slug>.registration-inputs.json` from the selected local output directory, or Actions artifacts when CI is enabled. Reports separate declared inputs, file SHA256 identities, measured artifact evidence, derived registry fields and pending admission inputs. File hashes are not Solidity admission digests.
+Review `RESULTS.md`, smoke/policy JSON and logs, receipts, `PR-REVIEW.md` and `<slug>.registration-inputs.json` from the selected local output directory alongside any committed `provenance.json`. Reports separate declared inputs, file SHA256 identities, measured artifact evidence, derived registry fields and pending admission inputs. File hashes are not Solidity admission digests.
 
-The qualification runner independently reconstructs each submitted artifact and runs real standard ERC20/WETH launches on a local fork with zero LP fees. It exercises both declared fee modes, exact-input/output swaps in both directions, previewed versus charged hook rates, and exact treasury, executor, owner and developer receipts. It also checks nonzero LP-fee and reduced-payment rejection, registered payout routing, zero-fee trading, zero-credit claim behavior and rejection of PoolManager protocol fees. The scenario uses the declared author rate, minimum tick spacing, maximum oracle cardinality and one LP position; it is not exhaustive bounds coverage. Dynamic rate boundary tests run separately.
+The runner independently reconstructs each selected artifact and uses the test-configured quote and prerequisite scenario on a local fork with zero LP fees. Shared checks evaluate declared fee modes, both directions and exact-input/output branches as successful trades or asserted policy refusals, with real successful trade evidence per declared mode. They check previewed versus charged rates, wallet/delta accounting, backing and exact treasury, executor, owner and developer receipts. Lifecycle, author-rate rejection, payout routing, zero-fee/zero-credit behavior, donation exclusion and protocol-fee rejection remain shared checks. Policy-specific formulas and boundaries run separately. Test setup and declared registry bounds are assumptions to review, not exhaustive bounds or arbitrary-runtime safety proof.
 
 `contracts/protocol/` contains external Black Market launch contracts used only by the test harness. `scripts/protocol-source-pins.json` records the exact imported bytes and documented adaptations so a maintainer update cannot silently change the platform being tested. These hashes identify the test dependency snapshot; they do not restrict a contributor's fee formula, quote selection or optional policy. `contracts/config/robinhood.json` identifies the fork venues and a historical reference envelope. The harness creates its own launch graph and profile, never upgrades or registers on the public chain. Internal names such as config version 6 and hub version 3 describe the external launch ABI, not separate hook submission versions.
 

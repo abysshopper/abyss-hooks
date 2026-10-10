@@ -2,8 +2,9 @@
 name: hook-authoring
 description: >-
   Create or modify an Abyss Hooks submission, including a static or dynamic fee
-  policy, hook.json, integration.json, and review.md. Use for hook economics,
-  oracle policy, and submission contract changes.
+  policy, manifests, contributor smoke/policy tests, review.md and local
+  qualification provenance. Use for hook economics, oracle policy and submission
+  contract changes.
 ---
 # Hook authoring
 
@@ -23,14 +24,16 @@ Read `SECURITY.md` before handling contributed code or evidence. Use the [hook-s
 ## Implement the requested policy
 
 1. For a new submission, copy the appropriate reference into `hooks/<lowercase-kebab-case-slug>/`. Rename the source and concrete contract. Do not reuse reserved reference `kind` or slugs.
-2. Keep the submission flat: only `hook.json`, `integration.json`, `review.md`, and local Solidity sources. No nested directories, symlinks, scripts, generated artifacts, or companion contracts. Preserve matching SPDX headers and a local `source` filename.
-3. Confine every submission pull request to `hooks/<slug>/`. Never modify the shared harness (`contracts/test/`), tooling (`scripts/`), catalogue tests (`tests/`), maintainer docs (`CONTRIBUTING.md`, root `README.md`), or CI workflows to make a submission pass. If the hook needs new harness capability (for example a non-WETH quote or swap hookData), stop and report the missing capability so a maintainer can land it as a separate infrastructure change first.
+2. Keep production sources flat with `hook.json`, `integration.json` and `review.md`. The sole allowed subdirectory is flat `test/`, containing mandatory `Smoke.t.sol`, optional policy `*.t.sol` suites and Solidity fixtures. A successful runner-generated `provenance.json` is the only generated-record exception. No deeper directories, symlinks, scripts, other generated artifacts or companion contracts. Preserve matching SPDX headers and a local production `source` filename.
+3. Confine every submission pull request to `hooks/<slug>/`, including contributor tests and reviewed compact provenance. Never modify the shared harness (`contracts/test/`), tooling (`scripts/`), catalogue tests (`tests/`), maintainer docs (`CONTRIBUTING.md`, root `README.md`) or CI workflows to make a submission pass. Express non-WETH quote, prerequisites and signed swap hookData through existing test-side seams. If genuinely new harness capability is required, report the exact need for a separate maintainer infrastructure change.
 4. Derive from `PoolBoundLaunchHookBaseV2` with its typed constructor. Use `PoolBoundTruncatedOracleV2` only for authenticated truncated history. Reuse the base's validation, callbacks, custody, and accounting; do not modify the approved base to accommodate a submission.
 5. Declare `authorFeeBps()` and match `developerFeeBps` in the integration manifest. New submissions use `kind: submission` and a nonzero stable 20-byte `authorId`, not a live payout wallet. Do not fabricate an author's identity or consent; obtain missing author/economic terms from the contributor before completing a submission.
 6. Static hooks charge the creator's configured maximum. Dynamic hooks explicitly declare `SwapFeeModel.Dynamic` and implement read-only `_calculateRate(LaunchHookFeeContextV2 memory)` within the frozen bounds. Preserve floor rounding, both fee modes, exact-input/output behavior, and rate freezing before oracle observations.
 7. For oracle policies, cover genuine warm-up, flat/falling movement, idle decay, same-timestamp observations, and history rejection as applicable to the requested policy. Do not impose the reference dynamic formula on unrelated policies.
 8. Update `hook.json` schema 1 and `integration.json` schema 2 without extra or duplicate fields. Use the exact field table and limits in `CONTRIBUTING.md`, including declared registry bounds and supported fee modes.
 9. Update `review.md` with the formula, units, rounding, boundary vectors, potential reverts, dependencies, authority, risks, input rationale, and fresh verification evidence. Separate measured results from proposed terms and pending approval.
+
+Include `<hook.json contract>SmokeTest` in `test/Smoke.t.sol`, inheriting `HookSmokeTest` with the actual source/contract descriptor in its constructor. Reuse `HookLaunchFixture` configuration, prerequisite and hookData seams; do not substitute deployment or `vm.etch` candidate code. Inherited nonvirtual `testSmoke*` tests are mandatory and unskippable. Policy refusals must be actual asserted rejections with unchanged wallets/liabilities, and each declared fee mode still needs successful trade evidence. Put custom formula, boundary, oracle and signed-data/replay checks in separate policy `test/*.t.sol` suites, such as `Policy.t.sol` and `Rate.t.sol`; they supplement, not replace, shared invariants. Mutable setup remains a reviewed assumption, not a safety proof. See `CONTRIBUTING.md` for the API and layout contract.
 
 ## Preserve the lifecycle and artifact boundary
 
@@ -112,11 +115,11 @@ The [official V4 security framework](https://developers.uniswap.org/docs/protoco
 
 ## Verify and hand off
 
-Use the `hook-qualification` skill. For a fee-policy change, exercise the changed behavior in an appropriate Foundry fixture; do not rely only on previews or compilation. Measure actual artifact size under the pinned profile: the dynamic reference has limited runtime headroom, so do not assume additional code fits.
+Use the `hook-qualification` skill and the local contributor command: `python3.12 scripts/check_hooks.py --hook <slug> --output evidence/<unique-run> --rpc-url https://robinhood.drpc.org --record`. For a fee-policy change, exercise the changed behavior in separate policy `test/*.t.sol` suites; do not rely only on previews or compilation. Measure actual artifact size under the pinned profile: the dynamic reference has limited runtime headroom, so do not assume additional code fits.
 
 Build an acceptance matrix in `review.md`: invariant, adversarial input/sequence, expected fee or revert, actual check/evidence and any uncovered case. Include all swap-table branches; boundary/rounding vectors; wrong manager/full key and stale swap/unlock context; preinitialization/wrong-price or liquidity-caller violations; nested/checkpoint attempts; donation exclusion, backed claims/cash and collector-only collection; downstream author-rate/payout behavior; and the requested oracle/dependency failure cases. Use existing fixtures/qualification instead of a replacement harness. If required coverage is missing, report the exact capability for a separate maintainer change; do not modify shared tests/tooling inside a submission PR.
 
-Catalogue launch scenarios are not exhaustive declared-bounds, token-behavior or adversarial coverage. Add policy-specific deterministic, fuzz and stateful invariant evidence through an appropriate approved fixture where supported; never present proposed tests or inherited example results as this artifact's observed verification. Run contributed code only in a disposable environment without credentials or wallet keys. Report exploitable findings through the private channel in `SECURITY.md`, not public review evidence.
+Catalogue launch scenarios are not exhaustive declared-bounds, token-behavior or adversarial coverage. Add policy-specific deterministic, fuzz and stateful invariant evidence in the contributor's `test/` suites using existing fixtures; never present proposed tests or inherited example results as this artifact's observed verification. Review the successful compact `provenance.json` and commit it with matching sources/tests, not full ignored logs. `--check-provenance` checks identity freshness without a chain rerun. Run contributed code only in a disposable environment without credentials or wallet keys. Report exploitable findings through the private channel in `SECURITY.md`, not public review evidence.
 
 Before opening a PR or pushing updates to an existing PR, apply the [pr-review skill](../pr-review/SKILL.md) to the complete proposed diff and resolve actionable findings or explicitly disclose remaining gaps. For security-sensitive changes, include the [hook-security-review skill](../hook-security-review/SKILL.md) assessment. Inspect exact-head CI when enabled; during the documented pause, do not dispatch or wait for Actions and report actual local checks plus unrun cases. Source/artifact changes require fresh applicable evidence.
 

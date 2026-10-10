@@ -12,12 +12,12 @@ This repository is a catalogue of pool-bound Uniswap V4 fee hooks for Black Mark
 
 Read `README.md`, the relevant sections of `CONTRIBUTING.md`, and `SECURITY.md` before changing hook behavior. Treat `CONTRIBUTING.md` as the submission and economics contract; do not invent another schema or payment path.
 
-- `hooks/<slug>/`: concrete hooks, `hook.json`, `integration.json`, and `review.md`. `reference-bound` and `dynamic-fee` are reserved reference examples.
+- `hooks/<slug>/`: concrete hooks, `hook.json`, `integration.json`, `review.md`, mandatory `test/Smoke.t.sol`, optional policy tests/fixtures and optional runner-generated `provenance.json`. `reference-bound` and `dynamic-fee` are reserved reference examples.
 - `contracts/src/`: shared authoring base, optional oracle template, interfaces, and libraries. Contributors must not modify the approved base to make a submission pass.
 - `contracts/protocol/`: external Black Market dependency snapshot used only to create isolated launch-test infrastructure.
-- `contracts/test/`: Foundry boundary tests and real launch/accounting fixtures.
+- `contracts/test/`: maintainer-owned `HookSmokeTest` / `HookLaunchFixture`, boundary tests and real launch/accounting fixtures. Contributors inherit the nonvirtual mandatory smoke tests, not replace them.
 - `contracts/config/robinhood.json`: fork venue identities and a historical reference envelope, not hook production admission.
-- `scripts/check_hooks.py`, `artifact_checks.py`, `registry_codec.py`: catalogue validation, artifact qualification, and registration encoding.
+- `scripts/check_hooks.py`, `artifact_checks.py`, `registry_codec.py`: local selected-hook/catalogue validation, artifact qualification, compact provenance and registration encoding.
 - `scripts/upstream.json`, `protocol-source-pins.json`, `install-deps.sh`: provenance and pinned dependencies. Keep intentional source changes consistent with their pins; never weaken checks to hide drift.
 - `tests/test_submissions.py`: Python runner regressions. `.github/workflows/hooks.yml` defines CI commands and toolchain pins.
 - `contracts/lib/`, `out/`, `cache/`, `broadcast/`, `evidence/`, `.integration/`: dependencies or generated/local output, not hand-edited source.
@@ -42,18 +42,19 @@ Before opening a PR or pushing updates to an existing PR, read and apply the [pr
 
 Use Python 3.12 and Foundry `nightly-5e88010a83d1b87b8f4d13058e42a2949d3e9dc0`. The pinned compiler is Solidity 0.8.28, Cancun, optimizer runs 1, no via-IR or bytecode metadata. EIP-170 runtime and initcode limits are 24,576 and 49,152 bytes.
 
-Run the relevant checks from the repository root:
+For hook authoring or review, read the `hook-qualification` skill and run the local contributor command from the repository root:
 
 ```sh
 python3.12 -m pip install -r scripts/requirements.txt
-python3.12 -m unittest discover -s tests
-python3.12 scripts/check_hooks.py --structure-only --output evidence/structure-<unique-run>
 scripts/install-deps.sh
-forge test --match-path contracts/test/DynamicFeeRate.t.sol -vv
-python3.12 scripts/check_hooks.py --output evidence/qualification-<unique-run> --rpc-url https://robinhood.drpc.org
+python3.12 scripts/check_hooks.py --hook <slug> --output evidence/<unique-run> --rpc-url https://robinhood.drpc.org --record
 ```
 
-Replace `<unique-run>` with a fresh identifier; do not overwrite prior evidence. Structure checks do not compile or qualify a hook. Full qualification checks every catalogue hook against isolated launch actors from the external dependency snapshot. Keep chain, fork-block and deployed-code-hash checks enabled with any RPC. Current launch fixtures require exact position-maximum/budget/supply allocation, inventory burn and the fee hub's `custodyRecipients()` descriptor.
+Replace `<slug>` with the selected hook and `<unique-run>` with a fresh identifier; do not overwrite prior evidence. The runner independently reconstructs the constructor-selected artifact and requires inherited `testSmoke*` results plus separate policy tests. No candidate `vm.etch`, deployment substitution, missing or skipped mandatory tests. Use test-side quote/configuration, prerequisites and genuinely signed hookData rather than adding qualification-only production getters. Review mutable setup as an assumption, not a sandbox or safety proof.
+
+The runner prints named results and actual receipts and writes full ignored logs, JSON and `RESULTS.md`. `--record` writes compact `hooks/<slug>/provenance.json` only after success, never commits or pushes. Review and commit that selected record with matching sources/tests for PR provenance; do not commit full logs or admission secrets. `python3.12 scripts/check_hooks.py --hook <slug> --check-provenance` checks recorded source/test/harness/tool identity, not current-chain behavior or a chain rerun.
+
+Maintainer infrastructure changes additionally use Python regressions, relevant Foundry tests, structure-only checks and catalogue-wide qualification as applicable, following `hook-qualification`. Structure checks do not compile or qualify a hook. Keep chain, fork-block and deployed-code-hash checks enabled with any RPC. Current launch fixtures require exact position-maximum/budget/supply allocation, inventory burn and the fee hub's `custodyRecipients()` descriptor.
 
 Automatic GitHub CI is temporarily paused. Keep workflow definitions, do not dispatch or wait for runs during the pause, and use applicable local verification. Disclose missing CI rather than calling it successful. Re-enable exact-head CI acceptance requirements when the pause ends.
 
@@ -67,8 +68,8 @@ Treat submissions and CI artifacts as untrusted. Run them in a disposable enviro
 
 Read the matching skill before starting its workflow:
 
-- [hook-authoring](.agents/skills/hook-authoring/SKILL.md): create or change a submission, its fee policy, manifests, and review.
-- [hook-qualification](.agents/skills/hook-qualification/SKILL.md): validate submissions, investigate qualification failures, or review registration evidence.
-- [pr-review](.agents/skills/pr-review/SKILL.md): review submissions and self-review the complete diff before opening or updating a PR.
+- [hook-authoring](.agents/skills/hook-authoring/SKILL.md): create or change a submission, fee policy, manifests, contributor smoke/policy tests and review; run local qualification before reporting evidence.
+- [hook-qualification](.agents/skills/hook-qualification/SKILL.md): run the local selected-hook smoke/policy command, record/review compact provenance, check identity freshness or diagnose qualification failures.
+- [pr-review](.agents/skills/pr-review/SKILL.md): review submissions and self-review the complete diff with local qualification/provenance before opening or updating a PR; no remote CI during the pause.
 - [hook-security-review](.agents/skills/hook-security-review/SKILL.md): perform an audit-informed V4 hook security review using official documentation, public audits, and executable evidence; not an independent audit or certification.
 - [rulesync-maintenance](.agents/skills/rulesync-maintenance/SKILL.md): change agent guidance, skills, targets, or generated outputs.

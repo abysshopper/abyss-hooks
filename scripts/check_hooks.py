@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from types import SimpleNamespace
 
 from eth_utils import keccak
 
@@ -23,6 +24,9 @@ def local_module(name):
 
 codec = local_module("registry_codec")
 artifacts = local_module("artifact_checks")
+results = local_module("qualification_results")
+smoke_checks = local_module("smoke_checks")
+local_tests = local_module("local_tests")
 ROOT = Path(__file__).resolve().parents[1]
 FIELDS = {"schemaVersion", "name", "topology", "source", "contract", "license"}
 SLUG = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
@@ -30,7 +34,9 @@ IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 INTEGRATION_FIELDS = {"schemaVersion", "kind", "authorId", "developerFeeBps", "swapFeeModel", "terms", "bounds"}
 SWAP_FEE_MODELS = {"static": 0, "dynamic": 1}
 FORK_MANIFEST = ROOT / "contracts/config/robinhood.json"
-HARNESS = "contracts/test/HookLaunch.t.sol"
+SMOKE_BASE = "contracts/test/HookSmokeTest.sol"
+SMOKE_FILE = "Smoke.t.sol"
+FOUNDRY_COMMIT = "5e88010a83d1b87b8f4d13058e42a2949d3e9dc0"
 
 
 def require(condition, message):
@@ -72,7 +78,7 @@ def write_review_reports(rows, output):
     reports = []
     for folder, row in rows:
         declared = integration_inputs(folder)
-        pins = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(folder.iterdir())}
+        pins = submission_source_hashes(folder)
         source_manifest = {"sourceIdentity": row, "declared": declared, "sourceFileSha256": pins}
         manifest_hash = hashlib.sha256(json.dumps(source_manifest, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         report = {
@@ -122,9 +128,7 @@ def submissions(root):
     rows = []
     for folder in sorted(root.iterdir()):
         require(folder.is_dir() and not folder.is_symlink() and SLUG.fullmatch(folder.name), f"Invalid hook directory: {folder}")
-        files = list(folder.iterdir())
-        require(all(p.is_file() and not p.is_symlink() for p in files), f"Only regular files allowed: {folder}")
-        require(all(p.name in {"hook.json", "integration.json", "review.md"} or (p.suffix == ".sol" and IDENTIFIER.fullmatch(p.stem)) for p in files), f"Unexpected submission file: {folder}")
+        files = submission_files(folder)
         manifest = folder / "hook.json"
         require(manifest.is_file(), f"Missing hook.json: {folder}")
         row = json.loads(manifest.read_text(), object_pairs_hook=unique_object)
@@ -146,6 +150,36 @@ def submissions(root):
         rows.append((folder, row))
     require(rows, "Empty hook catalogue cannot pass qualification")
     return rows
+
+def submission_files(folder):
+    """Only candidate sources, one flat contributor test directory and compact provenance."""
+    files = []
+    for path in sorted(folder.iterdir()):
+        require(not path.is_symlink(), f"Only regular files allowed: {folder}")
+        if path.name == "test":
+            require(path.is_dir(), f"Missing plain test directory: {folder}")
+            for test in sorted(path.iterdir()):
+                require(test.is_file() and not test.is_symlink(), f"Only regular test files allowed: {folder}")
+                stem = test.name.removesuffix(".sol").removesuffix(".t")
+                require(test.suffix == ".sol" and IDENTIFIER.fullmatch(stem), f"Unexpected test file: {test}")
+                files.append(test)
+            continue
+        require(path.is_file(), f"Only regular files allowed: {folder}")
+        require(path.name in {"hook.json", "integration.json", "review.md", "provenance.json"}
+                or (path.suffix == ".sol" and IDENTIFIER.fullmatch(path.stem)),
+                f"Unexpected submission file: {path}")
+        if path.name == "provenance.json":
+            record = artifacts.load_json(path.read_bytes())
+            require(isinstance(record, dict) and record.get("schema") == results.SCHEMA,
+                    "Unsupported local provenance schema")
+        if path.name != "provenance.json":
+            files.append(path)
+    require((folder / "test" / SMOKE_FILE).is_file(), f"Missing required test/{SMOKE_FILE}: {folder}")
+    return files
+
+
+def submission_source_hashes(folder):
+    return {str(path.relative_to(folder)): results.sha256(path) for path in submission_files(folder)}
 
 
 def run(argv, cwd, output, label, env=None):
@@ -212,20 +246,70 @@ def receipt_evidence(path, manifest, declared):
                 f"Invalid receipt identity: {name}")
     require(isinstance(receipt["poolId"], str) and re.fullmatch(r"0x[0-9a-fA-F]{64}", receipt["poolId"]) and int(receipt["poolId"], 16),
             "Invalid receipt poolId")
-    require(receipt["quoteAsset"].lower() == manifest["addresses"]["wrappedNative"].lower(), "Receipt quote differs from pinned WETH")
+    require(bool(receipt.get("modes")), "Missing per-mode smoke receipt evidence")
     for name in ("treasuryPaid", "ownerPaid", "authorPaid", "hookFeesCollected", "lpFeesCollected",
                  "tradeCount", "developerFeeBps", "authorFeeBps", "swapFeeModel", "expectedAuthorPaid", "expectedOwnerPaid"):
         require(name in receipt, f"Missing receipt field: {name}")
         receipt[name] = canonical_integer(receipt[name], name)
-    require(receipt["tradeCount"] >= 2, "Receipt requires actual trades in both directions")
+    require(receipt["tradeCount"] > 0, "Receipt requires actual supported trades")
     require(receipt["lpFeesCollected"] == 0, "Hook-only fees require zero collected LP fees")
-    require(receipt["hookFeesCollected"] > 0, "Qualification requires actual hook trading fees")
     require(receipt["developerFeeBps"] == declared["developerFeeBps"], "Receipt developerFeeBps differs from required author rate")
     require(receipt["authorFeeBps"] == declared["developerFeeBps"], "Receipt authorFeeBps differs from author declaration")
     require(receipt["swapFeeModel"] == SWAP_FEE_MODELS[declared["swapFeeModel"]],
             "Receipt swapFeeModel differs from author declaration")
     require(receipt["authorPaid"] == receipt["expectedAuthorPaid"] and receipt["ownerPaid"] == receipt["expectedOwnerPaid"],
             "Receipt author/owner accounting mismatch")
+    modes = receipt["modes"]
+    expected_modes = [mode for mode in range(2) if declared["bounds"]["feeModeFlags"] & (1 << mode)]
+    require(isinstance(modes, list) and [item.get("feeMode") for item in modes] == expected_modes,
+            "Smoke receipts must cover every declared fee mode exactly once")
+    total_trades = 0
+    for mode in modes:
+        require(mode.get("quoteAsset", "").lower() == receipt["quoteAsset"].lower(), "Mode quote identity differs")
+        for name in ("token", "hook", "quoteAsset"):
+            require(isinstance(mode.get(name), str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", mode[name])
+                    and int(mode[name], 16), f"Invalid mode identity: {name}")
+        require(canonical_integer(mode.get("developerFeeBps"), "mode developerFeeBps") == declared["developerFeeBps"]
+                and canonical_integer(mode.get("authorFeeBps"), "mode authorFeeBps") == declared["developerFeeBps"],
+                "Mode author rate differs from declaration")
+        require(canonical_integer(mode.get("swapFeeModel"), "mode swapFeeModel") == SWAP_FEE_MODELS[declared["swapFeeModel"]],
+                "Mode fee model differs from declaration")
+        for name in ("treasuryPaid", "hookFeesCollected", "principalBefore", "principalAfter", "openingBuyQuote"):
+            canonical_integer(mode.get(name), "mode " + name)
+        require(canonical_integer(mode.get("tradeCount"), "mode tradeCount") > 0, "Mode needs actual supported trades")
+        total_trades += canonical_integer(mode["tradeCount"], "mode tradeCount")
+        require(canonical_integer(mode.get("lpFeesCollected"), "mode LP fees") == 0, "Mode collected LP fees")
+        require(canonical_integer(mode.get("authorPaid"), "mode authorPaid") ==
+                canonical_integer(mode.get("expectedAuthorPaid"), "mode expectedAuthorPaid"), "Mode author accounting mismatch")
+        require(canonical_integer(mode.get("ownerPaid"), "mode ownerPaid") ==
+                canonical_integer(mode.get("expectedOwnerPaid"), "mode expectedOwnerPaid"), "Mode owner accounting mismatch")
+        require(canonical_integer(mode.get("principalBefore"), "mode principal before") ==
+                canonical_integer(mode.get("principalAfter"), "mode principal after"), "Collection changed principal")
+        cases = mode.get("cases")
+        require(isinstance(cases, list) and len(cases) == 4, "Smoke needs four named amount/direction cases")
+        expected_cases = {(direction, amount) for direction in ("buy", "sell")
+                          for amount in ("exact-input", "exact-output")}
+        require({(case.get("direction"), case.get("amountMode")) for case in cases} == expected_cases,
+                "Smoke amount/direction case coverage differs")
+        successes = 0
+        for case in cases:
+            require(case.get("status") in ("success", "rejected"), "Unknown smoke trade status")
+            if case["status"] == "success":
+                successes += 1
+                require(canonical_integer(case.get("inputAmount"), "case input") > 0
+                        and canonical_integer(case.get("outputAmount"), "case output") > 0,
+                        "Successful smoke case has no actual volume")
+                require(canonical_integer(case.get("ratePips"), "case rate") <= 1_000_000, "Smoke case fee rate out of bounds")
+                canonical_integer(case.get("feePaid"), "case feePaid")
+            else:
+                require(isinstance(case.get("expectedRevert"), str)
+                        and re.fullmatch(r"0x(?:[0-9a-fA-F]{2})+", case["expectedRevert"]),
+                        "Refused smoke case needs a concrete expected revert")
+        require(successes == canonical_integer(mode["tradeCount"], "mode tradeCount"), "Mode trade count mismatch")
+    require(total_trades == canonical_integer(receipt.get("totalTradeCount"), "totalTradeCount"),
+            "Aggregate smoke trade count mismatch")
+    require(receipt["tradeCount"] == canonical_integer(modes[0]["tradeCount"], "first mode tradeCount"),
+            "Compatibility receipt differs from first mode")
     return receipt
 
 
@@ -236,7 +320,6 @@ def candidate_environment(declared, selected, manifest, receipts, environment):
         "HOOK_MAX_DEVELOPER_BPS": declared["developerFeeBps"],
         "HOOK_SWAP_FEE_MODEL": SWAP_FEE_MODELS[declared["swapFeeModel"]],
         "HOOK_FORK_MANIFEST": str(manifest), "HOOK_RECEIPT_EVIDENCE": str(receipts),
-        "HOOK_ORACLE_VELOCITY_EXAMPLE": False,
     }
     for field, name in (
         ("feeModeFlags", "HOOK_FEE_MODE_FLAGS"), ("minimumTickSpacing", "HOOK_MIN_TICK_SPACING"),
@@ -248,10 +331,19 @@ def candidate_environment(declared, selected, manifest, receipts, environment):
     return env, values
 
 
-def qualify(output, rows, *, rpc_url=None):
+def clean_environment():
+    environment = {key: value for key, value in os.environ.items()
+                   if key in {"PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR"}}
+    environment["FOUNDRY_PROFILE"] = "default"
+    return environment
+
+
+def qualify(output, rows, *, rpc_url=None, record=False):
     require(not output.exists(), "Use a new evidence output directory")
     output.mkdir(parents=True)
+    (output / "RESULTS.md").write_text("# Local qualification\n\nStatus: running. No success is recorded yet.\n")
     write_review_reports(rows, output)
+    input_snapshot = results.source_identities(ROOT, ROOT / "hooks", [])
     native_pins = json.loads((ROOT / "scripts/protocol-source-pins.json").read_text(), object_pairs_hook=unique_object)
     for name, digest in {**native_pins["sha256"], native_pins["fixture"]["path"]: native_pins["fixture"]["sha256"]}.items():
         source = ROOT / name
@@ -260,14 +352,14 @@ def qualify(output, rows, *, rpc_url=None):
     save_json(output / "protocol-source-evidence.json", native_pins)
     manifest = fork_manifest(FORK_MANIFEST)
     rpc = rpc_url or manifest["rpcUrl"]
-    require(isinstance(rpc, str) and rpc.startswith(("https://", "http://")), "Invalid fork RPC override")
-    environment = {key: value for key, value in os.environ.items()
-                   if key in {"PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR"}}
-    environment["FOUNDRY_PROFILE"] = "default"
+    results.safe_endpoint(rpc)
+    manifest["rpcUrl"] = rpc
+    environment = clean_environment()
     block = json.loads(run(["cast", "block", str(manifest["forkBlock"]), "--json", "--rpc-url", rpc],
                            ROOT, output, "fork-block", environment))
     manifest["forkBlock"] = int(block["number"], 16) if isinstance(block["number"], str) else block["number"]
     manifest["forkBlockHash"] = block["hash"]
+    manifest["forkTimestamp"] = int(block["timestamp"], 16) if isinstance(block["timestamp"], str) else block["timestamp"]
     require(type(manifest["forkBlock"]) is int and manifest["forkBlock"] > 0, "RPC returned invalid block number")
     require(re.fullmatch(r"0x[0-9a-fA-F]{64}", manifest["forkBlockHash"]), "RPC returned invalid block hash")
     manifest_path = output / "robinhood.json"
@@ -277,7 +369,8 @@ def qualify(output, rows, *, rpc_url=None):
     provenance = {}
     for name in ("foundry.toml", "scripts/upstream.json", "scripts/install-deps.sh", "scripts/check_hooks.py",
                  "scripts/artifact_checks.py", "scripts/registry_codec.py", "scripts/requirements.txt",
-                 "scripts/protocol-source-pins.json", "contracts/test/NativeLaunchGraphFixture.sol"):
+                 "scripts/protocol-source-pins.json", "scripts/qualification_results.py", "scripts/smoke_checks.py",
+                 "scripts/local_tests.py", "contracts/test/NativeLaunchGraphFixture.sol"):
         raw = (ROOT / name).read_bytes()
         provenance[name] = hashlib.sha256(raw).hexdigest()
         destination = output / "project-provenance" / name
@@ -285,149 +378,38 @@ def qualify(output, rows, *, rpc_url=None):
         destination.write_bytes(raw)
     save_json(output / "project-provenance.json", {"sourceFileSha256": provenance})
     check_fork_graph(manifest, rpc, output, environment)
-    run(["forge", "build"], ROOT, output, "build", environment)
+    run(["forge", "build", "--ast"], ROOT, output, "build", environment)
     resolved_config = run(["forge", "config", "--root", str(ROOT)], ROOT, output, "foundry-profile-config", environment)
     solc = artifacts.compiler_executable()
+    tools = results.toolchain_identity(solc, environment)
+    require(FOUNDRY_COMMIT in tools["forge"]["version"], "Use the pinned Foundry release from CONTRIBUTING.md")
+    context = SimpleNamespace(ROOT=ROOT, SMOKE_FILE=SMOKE_FILE, SMOKE_BASE=SMOKE_BASE,
+                              results=results, artifacts=artifacts, smoke_checks=smoke_checks,
+                              require=require, run=run, save_json=save_json,
+                              submission_source_hashes=submission_source_hashes,
+                              candidate_environment=candidate_environment, receipt_evidence=receipt_evidence,
+                              input_snapshot=input_snapshot)
     qualified = []
+    recorded = []
     for folder, row in rows:
-        label = row["name"]
-        print(f"Qualifying {label} ({row['topology']})", flush=True)
-        candidate = output / label
-        candidate.mkdir()
-        report_path = output / f"{label}.registration-inputs.json"
-        report = json.loads(report_path.read_text(), object_pairs_hook=unique_object)
-        report["forkProvenance"] = {"manifest": "robinhood.json", "manifestSha256": manifest_hash,
-                                    "chainId": manifest["chainId"], "forkBlock": manifest["forkBlock"], "rpcUrl": rpc}
-        result = {"locallyQualified": False, "fixtureOnly": True, "productionAdmission": False}
-        try:
-            require({path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in folder.iterdir()} == report["sourceFileSha256"],
-                    f"Submission files changed after input review: {label}")
-            artifact = ROOT / "out" / row["source"] / f"{row['contract']}.json"
-            require(artifact.is_file(), f"No concrete artifact produced: {label}")
-            selected = candidate / "qualified-hook-artifact.json"
-            selected.write_bytes(artifact.read_bytes())
-            selected.chmod(0o444)
-            measured = artifacts.artifact_evidence(selected)
-            metadata = artifacts.artifact_metadata(artifacts.load_json(selected.read_bytes()), selected)
-            require(metadata["settings"]["compilationTarget"] == {str((folder / row["source"]).relative_to(ROOT)): row["contract"]},
-                    f"Artifact target collision or mismatch: {label}")
-            pins = artifacts.source_inventory(measured, ROOT)
-            source_manifest = {"schema": "abyss-hooks.compiler-source-pins.v1", "sources": pins,
-                               "selectedArtifactSha256": measured["fileSha256"], "forkManifestSha256": manifest_hash}
-            save_json(candidate / "source-manifest.json", source_manifest)
-            measured["sourceManifestSha256"] = hashlib.sha256((candidate / "source-manifest.json").read_bytes()).hexdigest()
-            measured["compilerReconstruction"] = artifacts.reconstruct_artifact(
-                measured, pins, root=ROOT, solc=solc, output=candidate / "compiler-reconstruction")
-            measured["compilerSourceCorrespondenceVerified"] = True
-            report["measuredArtifact"] = measured
-            result["artifactEvidence"] = measured
-            receipts = candidate / "receipt-evidence.json"
-            candidate_manifest = candidate / "robinhood.json"
-            candidate_manifest.write_bytes(manifest_path.read_bytes())
-            candidate_manifest.chmod(0o444)
-            env, inputs = candidate_environment(report["declared"], selected, candidate_manifest, receipts, environment)
-            # Derive feature presence from the independent compiler, not author metadata.
-            rebuilt = artifacts.load_json((candidate / "compiler-reconstruction/compiler-output.json").read_bytes())
-            compiled_metadata = artifacts.load_json(rebuilt["contracts"][
-                str((folder / row["source"]).relative_to(ROOT))
-            ][row["contract"]]["metadata"])
-            abi = compiled_metadata["output"]["abi"]
-            has_oracle = any(
-                item.get("type") == "function" and item.get("name") == "observeTruncated"
-                and [argument["type"] for argument in item["inputs"]] == ["bytes32", "uint32[]"]
-                for item in abi
-            )
-            env["HOOK_HAS_ORACLE"] = "true" if has_oracle else "false"
-            inputs["HOOK_HAS_ORACLE"] = has_oracle
-            # Economic vectors apply only to this repository's oracle-velocity reference,
-            # not arbitrary admitted dynamic policies. Feature support remains ABI-derived.
-            velocity_example = folder == ROOT / "hooks/dynamic-fee" and row["contract"] == "DynamicFeeHook"
-            env["HOOK_ORACLE_VELOCITY_EXAMPLE"] = "true" if velocity_example else "false"
-            inputs["HOOK_ORACLE_VELOCITY_EXAMPLE"] = velocity_example
-            config = candidate / "external-artifact.foundry.toml"
-            config.write_text(resolved_config + '\n[[profile.default.fs_permissions]]\naccess = "read-write"\npath = '
-                              + json.dumps(str(candidate)) + "\n")
-            env["FOUNDRY_CONFIG"] = str(config)
-            inputs["FOUNDRY_CONFIG"] = str(config)
-            result["foundryConfigSha256"] = hashlib.sha256(config.read_bytes()).hexdigest()
-            save_json(candidate / "runtime-inputs.json", inputs)
-            report["runtimeQualification"] = {"passed": False, "status": "running", "fixtureOnly": True}
-            save_json(report_path, report)
-            save_json(candidate / "qualification-result.json", result)
-            run(["forge", "test", "--match-path", HARNESS, "--fork-url", rpc,
-                 "--fork-block-number", str(manifest["forkBlock"]), "--root", str(ROOT), "-vvv"],
-                ROOT, candidate, "foundry-qualification", env)
-            require(hashlib.sha256(selected.read_bytes()).hexdigest() == measured["fileSha256"], "Selected artifact changed during execution")
-            require(hashlib.sha256(manifest_path.read_bytes()).hexdigest() == manifest_hash, "Fork manifest changed during execution")
-            require(hashlib.sha256(candidate_manifest.read_bytes()).hexdigest() == manifest_hash, "Candidate fork manifest changed during execution")
-            evidence = receipt_evidence(receipts, manifest, report["declared"])
-            result.update(locallyQualified=True, receiptEvidence=evidence,
-                          receiptEvidenceFileSha256=hashlib.sha256(receipts.read_bytes()).hexdigest())
-            report["runtimeQualification"] = {
-                "passed": True, "status": "passed", "fixtureOnly": True,
-                "scope": "One standard ERC20/WETH launch with candidate artifact; fork-local governance simulation, not live admission",
-                "declaredBoundsAndEconomicsExhaustivelyExecuted": False,
-                "evidence": f"{label}/qualification-result.json", "receiptEvidence": f"{label}/receipt-evidence.json",
-            }
-        except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
-            report["runtimeQualification"] = {"passed": False, "status": "failed", "fixtureOnly": True, "error": str(error)}
-            result["error"] = str(error)
-            raise
-        finally:
-            save_json(report_path, report)
-            save_json(candidate / "qualification-result.json", result)
-        qualified.append({"name": label, "evidence": f"{label}/qualification-result.json", "locallyQualified": True})
-    qualify_oracle_composition(output, solc, environment, resolved_config, rpc)
+        result, evidence = local_tests.qualify_candidate(context, output, folder, row, manifest,
+                                                        environment, resolved_config, solc, tools)
+        qualified.append({"name": row["name"], "evidence": f"{row['name']}/qualification-result.json", "locallyQualified": True})
+        recorded.append((folder, evidence))
     save_json(output / "catalogue-result.json", {
-        "upstream": json.loads((ROOT / "scripts/upstream.json").read_text()), "forkManifestSha256": manifest_hash,
         "hooks": qualified, "locallyQualified": True, "fixtureOnly": True, "productionAdmission": False,
-        "oracleComposition": {"evidence": "oracle-composition/qualification-result.json",
-                              "locallyQualified": True, "fixtureOnly": True},
+        "fork": {"chainId": manifest["chainId"], "block": manifest["forkBlock"], "blockHash": manifest["forkBlockHash"]},
     })
+    (output / "RESULTS.md").write_text("# Local qualification passed\n\nGitHub CI not run: explicitly paused.\n\n"
+                                       + "\n".join(f"- [{item['name']}]({item['name']}/RESULTS.md)" for item in qualified) + "\n")
+    if record:
+        for folder, evidence in recorded:
+            results.check_record(evidence, root=ROOT, folder=folder, tools=tools)
+            results.write_record(folder / "provenance.json", evidence)
+            print(f"Recorded {folder.relative_to(ROOT)}/provenance.json; review and stage it with its sources/tests.", flush=True)
+    print(f"\nLocal results: {output / 'RESULTS.md'}", flush=True)
 
 
-def qualify_oracle_composition(output, solc, environment, resolved_config, rpc):
-    """Exercise the opt-in template as a fixture, not another catalogue submission."""
-    candidate = output / "oracle-composition"
-    candidate.mkdir()
-    selected = candidate / "qualified-hook-artifact.json"
-    selected.write_bytes((ROOT / "out/TruncatedOracleComposition.t.sol/StaticOracleHook.json").read_bytes())
-    selected.chmod(0o444)
-    measured = artifacts.artifact_evidence(selected)
-    metadata = artifacts.artifact_metadata(artifacts.load_json(selected.read_bytes()), selected)
-    require(metadata["settings"]["compilationTarget"] == {
-        "contracts/test/TruncatedOracleComposition.t.sol": "StaticOracleHook"
-    }, "Oracle fixture artifact target mismatch")
-    pins = artifacts.source_inventory(measured, ROOT)
-    measured["compilerReconstruction"] = artifacts.reconstruct_artifact(
-        measured, pins, root=ROOT, solc=solc, output=candidate / "compiler-reconstruction")
-    measured["compilerSourceCorrespondenceVerified"] = True
-    save_json(candidate / "source-manifest.json", {"sources": pins})
-    declared = artifacts.load_json((ROOT / "hooks/reference-bound/integration.json").read_bytes())
-    manifest_path = candidate / "robinhood.json"
-    manifest_path.write_bytes((output / "robinhood.json").read_bytes())
-    manifest_path.chmod(0o444)
-    manifest = fork_manifest(manifest_path)
-    receipts = candidate / "receipt-evidence.json"
-    env, inputs = candidate_environment(declared, selected, manifest_path, receipts, environment)
-    env["HOOK_HAS_ORACLE"] = "true"
-    inputs["HOOK_HAS_ORACLE"] = True
-    config = candidate / "external-artifact.foundry.toml"
-    config.write_text(resolved_config + '\n[[profile.default.fs_permissions]]\naccess = "read-write"\npath = '
-                      + json.dumps(str(candidate)) + "\n")
-    env["FOUNDRY_CONFIG"] = str(config)
-    inputs["FOUNDRY_CONFIG"] = str(config)
-    save_json(candidate / "runtime-inputs.json", inputs)
-    result = {"locallyQualified": False, "fixtureOnly": True, "productionAdmission": False,
-              "artifactEvidence": measured}
-    save_json(candidate / "qualification-result.json", result)
-    run(["forge", "test", "--match-path", HARNESS, "--fork-url", rpc,
-         "--fork-block-number", str(manifest["forkBlock"]), "--root", str(ROOT), "-vvv"],
-        ROOT, candidate, "foundry-qualification", env)
-    result["receiptEvidence"] = receipt_evidence(receipts, manifest, declared)
-    result["locallyQualified"] = True
-    save_json(candidate / "qualification-result.json", result)
-    print("Qualified optional oracle composition fixture", flush=True)
 
 
 def main():
@@ -435,17 +417,44 @@ def main():
     parser.add_argument("--rpc-url", help="Override the pinned manifest's public RPC endpoint")
     parser.add_argument("--output", type=Path, default=ROOT / "evidence")
     parser.add_argument("--structure-only", action="store_true")
+    parser.add_argument("--hook", help="Qualify one hook slug; all hooks by default")
+    parser.add_argument("--record", action="store_true", help="Write compact hooks/<slug>/provenance.json after success only")
+    parser.add_argument("--check-provenance", action="store_true", help="Check recorded input identities without rerunning the fork")
     args = parser.parse_args()
+    output_was_present = args.output.resolve().exists()
     try:
         rows = submissions(ROOT / "hooks")
         print(f"Validated {len(rows)} source submissions", flush=True)
+        if args.hook:
+            require(SLUG.fullmatch(args.hook), "Invalid hook selection")
+            rows = [(folder, row) for folder, row in rows if row["name"] == args.hook]
+            require(bool(rows), f"Unknown hook: {args.hook}")
+        require(not (args.structure_only and (args.record or args.check_provenance)),
+                "Structure-only validation cannot record runtime provenance")
+        require(not (args.record and args.check_provenance), "Choose record or check-provenance, not both")
+        if args.check_provenance:
+            tools = results.toolchain_identity(artifacts.compiler_executable(), clean_environment())
+            for folder, row in rows:
+                path = folder / "provenance.json"
+                require(path.is_file() and not path.is_symlink(), f"Missing local provenance: {row['name']}")
+                record = artifacts.load_json(path.read_bytes())
+                results.check_record(record, root=ROOT, folder=folder, tools=tools)
+                print(f"CURRENT {row['name']}: source/test/harness/tool identities match; fork not rerun.", flush=True)
+            return 0
         if args.structure_only:
             output = args.output.resolve()
             require(not output.exists(), "Use a new evidence output directory")
             output.mkdir(parents=True)
             write_review_reports(rows, output)
         else:
-            qualify(args.output.resolve(), rows, rpc_url=args.rpc_url)
+            try:
+                qualify(args.output.resolve(), rows, rpc_url=args.rpc_url, record=args.record)
+            except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
+                summary = args.output.resolve() / "RESULTS.md"
+                if not output_was_present and summary.is_file():
+                    summary.write_text("# Local qualification failed\n\nNo successful provenance was recorded.\n\n"
+                                       + str(error) + "\n")
+                raise
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print(f"Hook checks refused: {error}", file=sys.stderr)
         return 1

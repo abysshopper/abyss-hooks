@@ -25,14 +25,15 @@ contract ForkTrader is IUnlockCallback {
 
     constructor(IPoolManager manager_) { manager = manager_; }
 
-    function trade(PoolKey memory key, SwapParams memory params) external returns (BalanceDelta) {
-        return abi.decode(manager.unlock(abi.encode(key, params, msg.sender)), (BalanceDelta));
+    function trade(PoolKey memory key, SwapParams memory params, bytes memory hookData) external returns (BalanceDelta) {
+        return abi.decode(manager.unlock(abi.encode(key, params, msg.sender, hookData)), (BalanceDelta));
     }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         require(msg.sender == address(manager), "manager only");
-        (PoolKey memory key, SwapParams memory params, address payer) = abi.decode(data, (PoolKey, SwapParams, address));
-        BalanceDelta delta = manager.swap(key, params, "");
+        (PoolKey memory key, SwapParams memory params, address payer, bytes memory hookData) =
+            abi.decode(data, (PoolKey, SwapParams, address, bytes));
+        BalanceDelta delta = manager.swap(key, params, hookData);
         _settle(key.currency0, delta.amount0(), payer);
         _settle(key.currency1, delta.amount1(), payer);
         return abi.encode(delta);

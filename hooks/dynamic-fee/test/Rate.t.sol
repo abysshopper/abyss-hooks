@@ -2,9 +2,9 @@
 pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
-import { DynamicFeeHookRate } from "../../hooks/dynamic-fee/DynamicFeeHook.sol";
-import { LaunchHookFeeRateV2, LaunchHookFeeContextV2 } from "../src/hooks/v4/authoring/LaunchHookFeeRateV2.sol";
-import { ILaunchHookV1 } from "../src/hooks/v4/authoring/ILaunchHookV1.sol";
+import { DynamicFeeHookRate } from "../DynamicFeeHook.sol";
+import { LaunchHookFeeRateV2, LaunchHookFeeContextV2 } from "../../../contracts/src/hooks/v4/authoring/LaunchHookFeeRateV2.sol";
+import { ILaunchHookV1 } from "../../../contracts/src/hooks/v4/authoring/ILaunchHookV1.sol";
 
 contract DynamicFeeHookRateHarness is LaunchHookFeeRateV2 {
     int256 private tickChange;

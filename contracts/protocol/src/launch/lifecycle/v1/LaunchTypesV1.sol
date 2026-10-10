@@ -21,6 +21,7 @@ struct TokenConfigV1 {
     uint256 nftUnit;
     string metadataURI;
     bytes32 salt;
+    /// @dev Committed metadata only; activation burns unused inventory, never delivers it here.
     address inventoryRecipient;
     bool burnOnCancel;
 }
@@ -41,6 +42,7 @@ struct MarketConfigV1 {
     bytes32 adapterId;
     bytes32 profileId;
     address quoteAsset;
+    /// @dev Intended LP allocation: position maxima sum to this amount; market budgets sum to supply.
     uint256 tokenBudget;
     uint32 configVersion;
     bytes config;

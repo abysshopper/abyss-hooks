@@ -19,7 +19,7 @@ Verify the contributor's "no base change" claim rather than trusting it: `git di
 
 ## Require independent verification
 
-- CI must have run on the exact head commit. No reported checks means nothing is verified; never merge on local claims alone.
+- When CI is enabled, require successful exact-head checks and inspect their evidence. During the maintainer-authorized CI pause, do not dispatch or wait for runs; use applicable local checks and explicitly state that CI did not run. Missing CI is not successful CI.
 - Separate declared inputs (`integration.json` values, terms, authorId) from proven behavior (qualification evidence). Declarations are proposals, not facts.
 - Reproduce locally when feasible: structure check, unit suite, and full fork qualification per the `hook-qualification` skill. Compare measured artifact sizes and hashes against the PR's claims.
 - Watch for coverage gaps the harness cannot see. Example: a fork-only permissive signature authority proves gating logic but not the real signature scheme—if the hook verifies EIP-712/ECDSA passes, require at least one end-to-end check against a real test key, not only an etched accept-all account.

@@ -94,7 +94,7 @@ library V4MarketConfigLibV2 {
                 ) revert InvalidConfiguration();
             }
         }
-        if (maximumBudget > tokenBudget) revert InvalidConfiguration();
+        if (maximumBudget != tokenBudget) revert InvalidConfiguration();
         _validateCanonicalLiquidityBounds(positions, tickSpacing);
     }
 

@@ -1,9 +1,7 @@
 name: Hooks
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  # Automatic CI is paused. Keep this workflow for deliberate manual runs after re-enabling it.
   workflow_dispatch:
 
 # Fork code is untrusted. Never add secrets, write permissions, RPC credentials,

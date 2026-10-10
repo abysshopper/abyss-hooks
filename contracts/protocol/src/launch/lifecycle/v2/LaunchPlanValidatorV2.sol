@@ -127,7 +127,7 @@ contract LaunchPlanValidatorV2 {
             if (marketPositions > 1) registry.requireEligible(market.adapterId, market.profileId,
                 market.configVersion, capabilities | LaunchCapabilitiesV1.MULTI_POSITION);
         }
-        if (allocated > plan.token.supply) revert InvalidMarket();
+        if (allocated != plan.token.supply) revert InvalidMarket();
     }
 
     function _committedPositions(MarketConfigV1 calldata market) private view returns (uint256) {

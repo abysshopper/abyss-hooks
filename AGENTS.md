@@ -14,9 +14,9 @@ Read `README.md`, the relevant sections of `CONTRIBUTING.md`, and `SECURITY.md` 
 
 - `hooks/<slug>/`: concrete hooks, `hook.json`, `integration.json`, and `review.md`. `reference-bound` and `dynamic-fee` are reserved reference examples.
 - `contracts/src/`: shared authoring base, optional oracle template, interfaces, and libraries. Contributors must not modify the approved base to make a submission pass.
-- `contracts/protocol/`: shipped protocol sources used to deploy fresh V6 infrastructure in qualification.
+- `contracts/protocol/`: external Black Market dependency snapshot used only to create isolated launch-test infrastructure.
 - `contracts/test/`: Foundry boundary tests and real launch/accounting fixtures.
-- `contracts/config/robinhood.json`: pinned historical deployed V5 graph, not newly deployed V6 evidence.
+- `contracts/config/robinhood.json`: fork venue identities and a historical reference envelope, not hook production admission.
 - `scripts/check_hooks.py`, `artifact_checks.py`, `registry_codec.py`: catalogue validation, artifact qualification, and registration encoding.
 - `scripts/upstream.json`, `protocol-source-pins.json`, `install-deps.sh`: provenance and pinned dependencies. Keep intentional source changes consistent with their pins; never weaken checks to hide drift.
 - `tests/test_submissions.py`: Python runner regressions. `.github/workflows/hooks.yml` defines CI commands and toolchain pins.
@@ -51,7 +51,9 @@ forge test --match-path contracts/test/DynamicFeeRate.t.sol -vv
 python3.12 scripts/check_hooks.py --output evidence/qualification-<unique-run> --rpc-url https://robinhood.drpc.org
 ```
 
-Replace `<unique-run>` with a fresh identifier; do not overwrite prior evidence. Structure checks do not compile or qualify a hook. Full qualification checks every catalogue hook, deploys actual V6 actors on a pinned public-chain fork, and exercises the declared fee modes and accounting. Keep chain, fork-block, and deployed-code-hash checks enabled even with a different RPC.
+Replace `<unique-run>` with a fresh identifier; do not overwrite prior evidence. Structure checks do not compile or qualify a hook. Full qualification checks every catalogue hook against isolated launch actors from the external dependency snapshot. Keep chain, fork-block and deployed-code-hash checks enabled with any RPC. Current launch fixtures require exact position-maximum/budget/supply allocation, inventory burn and the fee hub's `custodyRecipients()` descriptor.
+
+Automatic GitHub CI is temporarily paused. Keep workflow definitions, do not dispatch or wait for runs during the pause, and use applicable local verification. Disclose missing CI rather than calling it successful. Re-enable exact-head CI acceptance requirements when the pause ends.
 
 Report commands actually run, failures, missing prerequisites, and evidence paths. Never describe structure-only results, old artifacts, or fixture admission as current full qualification or production approval.
 

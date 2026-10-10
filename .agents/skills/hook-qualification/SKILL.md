@@ -35,9 +35,10 @@ The default public RPC may reject fork reads with a Cloudflare challenge. `--rpc
 Inspect fresh `PR-REVIEW.md`, each `<slug>.registration-inputs.json`, qualification results, build logs, and receipt evidence in the selected output directory.
 
 - Separate declared author/economic inputs, file SHA256 pins, measured artifact evidence, derived registry fields, and pending admission inputs. File pins are not Solidity admission digests.
-- Qualification deploys fresh actual V6 infrastructure using shipped `contracts/protocol/` sources against pinned real manager/oracle/WETH contracts. `contracts/config/robinhood.json` is historical V5 evidence; do not relabel those deployed actors as V6.
+- `contracts/protocol/` is an external Black Market source snapshot used only to create isolated launch-test infrastructure. `contracts/config/robinhood.json` identifies fork venues and a historical reference envelope, not candidate production admission. File hashes identify imported dependency bytes, not restrictions on contributor policies.
 - Check coverage against the hook's declared modes and policy. Existing launch checks cover real swaps, wallet/delta accounting, treasury and royalty receipts, rejection paths, payout routing, and donation exclusion. They are not exhaustive coverage of every submitted bound or proof of arbitrary-runtime safety.
 - Fixture author signatures and fork-only administration do not establish control of a submitted `authorId`. Production admission separately needs approved commitments, economics, graph, current author-controller authorization, and administrator submission.
+- Automatic GitHub CI is temporarily paused. Do not dispatch or wait for a workflow; run applicable local checks and disclose missing CI. Restore exact-head Actions verification when the pause ends.
 
 For failures, diagnose the first failing stage using its logs and source, fix the responsible behavior, and rerun the affected path. Never relax validation, alter pins merely to accept unexplained drift, or change the compiler profile to hide a failure.
 

@@ -404,7 +404,9 @@ def qualify_oracle_composition(output, solc, environment, resolved_config, rpc):
     measured["compilerSourceCorrespondenceVerified"] = True
     save_json(candidate / "source-manifest.json", {"sources": pins})
     declared = artifacts.load_json((ROOT / "hooks/reference-bound/integration.json").read_bytes())
-    manifest_path = output / "robinhood.json"
+    manifest_path = candidate / "robinhood.json"
+    manifest_path.write_bytes((output / "robinhood.json").read_bytes())
+    manifest_path.chmod(0o444)
     manifest = fork_manifest(manifest_path)
     receipts = candidate / "receipt-evidence.json"
     env, inputs = candidate_environment(declared, selected, manifest_path, receipts, environment)

@@ -47,6 +47,14 @@ interface IContractOwnerFork {
     function owner() external view returns (address);
 }
 
+interface ILaunchSupplyFork {
+    function totalSupply() external view returns (uint256);
+}
+
+interface ISourceCustodyFork {
+    function custodyRecipients() external view returns (address[5] memory);
+}
+
 contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixture {
     using BalanceDeltaLibrary for BalanceDelta;
     using PoolIdLibrary for PoolKey;
@@ -148,6 +156,63 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
             ++scenarios;
         }
         assertGt(scenarios, 0);
+    }
+
+    function testLaunchRejectsPositionMaximumBudgetMismatch() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        LaunchPlanV1 memory plan = _planWithFees(mode, 250_001, developerBps, 10_000);
+        V4MarketConfigV6 memory config = abi.decode(plan.markets[0].config, (V4MarketConfigV6));
+        uint256 budget = plan.markets[0].tokenBudget;
+        PoolFeeCollectorFactoryV1 factory = adapter.collectorFactory();
+        for (uint256 i; i < 2; ++i) {
+            config.positions[0].maxTokenAmount = i == 0 ? budget - 1 : budget + 1;
+            plan.markets[0].config = abi.encode(config);
+            address predictedToken = core.predictToken(plan);
+            vm.expectRevert(bytes4(keccak256("InvalidConfiguration()")));
+            factory.poolBoundHookParameters(address(adapter), predictedToken, plan.markets[0]);
+        }
+    }
+
+    function testLaunchRejectsMarketBudgetsDifferentFromSupply() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        for (uint256 i; i < 2; ++i) {
+            LaunchPlanV1 memory plan = _planWithFees(mode, 260_001 + i, developerBps, 10_000);
+            uint256 budget = i == 0 ? plan.token.supply - 1 : plan.token.supply + 1;
+            V4MarketConfigV6 memory config = abi.decode(plan.markets[0].config, (V4MarketConfigV6));
+            config.positions[0].maxTokenAmount = budget;
+            plan.markets[0].tokenBudget = budget;
+            plan.markets[0].config = abi.encode(config);
+            (PoolBoundHookParametersV2 memory parameters,) = adapter.collectorFactory()
+                .poolBoundHookParameters(address(adapter), core.predictToken(plan), plan.markets[0]);
+            config.hookSalt = _mine(address(deployer), deployer.initCodeHash(parameters));
+            plan.markets[0].config = abi.encode(config);
+            vm.prank(creator);
+            vm.expectRevert(bytes4(keccak256("InvalidMarket()")));
+            core.beginLaunch(plan, LaunchModeV1.Staged);
+        }
+    }
+
+    function testLaunchRejectsMissingOrMalformedCustodyDescriptor() public {
+        uint8 mode = (vm.envUint("HOOK_FEE_MODE_FLAGS") & 1) != 0 ? 0 : 1;
+        for (uint256 i; i < 3; ++i) {
+            uint256 snapshot = vm.snapshotState();
+            LaunchPlanV1 memory plan = _planWithFees(mode, 270_001 + i, developerBps, 10_000);
+            vm.startPrank(creator);
+            bytes32 launchId = core.beginLaunch(plan, LaunchModeV1.Staged).launchId;
+            core.prepareMarkets(plan, 0, 1);
+            vm.stopPrank();
+            (, PreparedMarketV1 memory prepared) = core.directory().market(launchId, 0);
+            bytes memory response = new bytes(i == 0 ? 0 : i == 1 ? 159 : 160);
+            if (i == 2) response[0] = 0x01;
+            vm.mockCall(prepared.feeSource, abi.encodeCall(ISourceCustodyFork.custodyRecipients, ()), response);
+            vm.prank(creator);
+            vm.expectRevert();
+            core.activateLaunch(plan);
+            assertFalse(core.isLaunchActive(launchId));
+            assertEq(StateLibrary.getLiquidity(manager, PoolId.wrap(prepared.identity.poolId)), 0);
+            vm.clearMockedCalls();
+            require(vm.revertToStateAndDelete(snapshot), "restore custody descriptor boundary");
+        }
     }
 
     function testLaunchRejectsReducedAuthorPayment() public {
@@ -1065,13 +1130,21 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         vm.startPrank(creator);
         core.beginLaunch(plan, LaunchModeV1.Staged);
         core.prepareMarkets(plan, 0, 1);
+        assertEq(IERC20Fork(core.predictToken(plan)).balanceOf(address(core)), plan.token.supply);
         receipt = core.activateLaunch(plan);
         vm.stopPrank();
         assertTrue(core.isLaunchActive(receipt.launchId));
         assertEq(uint256(core.readLaunchProgress(receipt.launchId).phase), uint256(LaunchPhaseV1.Active));
         assertEq(receipt.marketCount, 1);
         assertEq(receipt.positionCount, 1);
+        _assertInventoryBurn(receipt.token, selected.positions[0]);
         (, prepared) = core.directory().market(receipt.launchId, 0);
+        {
+            address[5] memory custody = ISourceCustodyFork(prepared.feeSource).custodyRecipients();
+            assertEq(custody[0], address(locker));
+            assertEq(custody[1], address(manager));
+            assertEq(custody[2], prepared.identity.hook);
+        }
         key = PoolKey(Currency.wrap(prepared.identity.currency0), Currency.wrap(prepared.identity.currency1), prepared.identity.fee, prepared.identity.tickSpacing, IHooks(prepared.identity.hook));
         assertEq(deployer.deployedCodeHash(prepared.identity.hook), prepared.identity.hook.codehash);
         assertEq(keccak256(vm.getCode(vm.envString("HOOK_ARTIFACT"))), deployer.creationCodeHash());
@@ -1093,6 +1166,17 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         _assertHookFeeBacking(manager, key);
         vm.prank(creator);
         assertTrue(IERC20Fork(receipt.token).approve(address(trader), type(uint256).max));
+    }
+
+    function _assertInventoryBurn(address token, V4PositionConfigV1 memory position) private view {
+        assertEq(IERC20Fork(token).balanceOf(address(core)), 0, "unused inventory must be burned");
+        uint160 lower = TickMath.getSqrtPriceAtTick(position.tickLower);
+        uint160 upper = TickMath.getSqrtPriceAtTick(position.tickUpper);
+        uint256 mintedPrincipal = token < address(weth)
+            ? SqrtPriceMath.getAmount0Delta(lower, upper, position.liquidity, true)
+            : SqrtPriceMath.getAmount1Delta(lower, upper, position.liquidity, true);
+        assertEq(ILaunchSupplyFork(token).totalSupply(), mintedPrincipal);
+        assertLt(mintedPrincipal, position.maxTokenAmount, "fixture must exercise a nonzero inventory burn");
     }
 
     function _planWithFees(uint8 mode, uint256 nonce, uint16 selectedAuthorBps, uint24 hookPips)
@@ -1131,9 +1215,9 @@ contract HookLaunchTest is LaunchDeltaAccountingFixture, NativeLaunchGraphFixtur
         config.developerFeeBps = selectedAuthorBps;
         config.positions = new V4PositionConfigV1[](1);
         int24 edge = (TickMath.MAX_TICK / config.tickSpacing) * config.tickSpacing;
-        config.positions[0] = V4PositionConfigV1(token < address(weth) ? int24(0) : -edge, token < address(weth) ? edge : int24(0), 1_000 ether, bytes32(uint256(1)), 1_000 ether);
+        config.positions[0] = V4PositionConfigV1(token < address(weth) ? int24(0) : -edge, token < address(weth) ? edge : int24(0), 1_000 ether, bytes32(uint256(1)), plan.token.supply);
         plan.markets = new MarketConfigV1[](1);
-        plan.markets[0] = MarketConfigV1(adapterId, profileId, address(weth), 1_100 ether, 6, abi.encode(config));
+        plan.markets[0] = MarketConfigV1(adapterId, profileId, address(weth), plan.token.supply, 6, abi.encode(config));
         PoolBoundHookParametersV2 memory parameters;
         (parameters,) = adapter.collectorFactory().poolBoundHookParameters(address(adapter), token, plan.markets[0]);
         config.hookSalt = _mine(address(deployer), deployer.initCodeHash(parameters));

@@ -203,7 +203,23 @@ def check_fork_graph(manifest, rpc, output, env):
     save_json(output / "fork-code-evidence.json", evidence)
 
 
-def receipt_evidence(path, manifest, declared):
+def declared_view(abi, name):
+    """True when the ABI declares `name()`; refuse any shape other than a pure address getter.
+
+    The harness reads a declaration from the artifact's runtime code etched without running a
+    constructor, so storage or immutables read zero there. `pure` makes the compiler reject such
+    reads (constructor independence); the harness also checks each constructed hook agrees.
+    """
+    matches = [item for item in abi if item.get("type") == "function" and item.get("name") == name]
+    if not matches:
+        return False
+    require(len(matches) == 1 and not matches[0].get("inputs") and matches[0].get("stateMutability") == "pure"
+            and [output["type"] for output in matches[0].get("outputs", [])] == ["address"],
+            f"Declaration {name}() must be one constructor-independent pure getter returning an address")
+    return True
+
+
+def receipt_evidence(path, manifest, declared, required_quote=False):
     require(path.is_file() and not path.is_symlink(), "Missing real launch receipt evidence after forge test")
     receipt = json.loads(path.read_text(), object_pairs_hook=unique_object)
     require(receipt["schema"] == "abyss-hooks.launch-receipts.v1", "Wrong launch receipt schema")
@@ -212,7 +228,16 @@ def receipt_evidence(path, manifest, declared):
                 f"Invalid receipt identity: {name}")
     require(isinstance(receipt["poolId"], str) and re.fullmatch(r"0x[0-9a-fA-F]{64}", receipt["poolId"]) and int(receipt["poolId"], 16),
             "Invalid receipt poolId")
-    require(receipt["quoteAsset"].lower() == manifest["addresses"]["wrappedNative"].lower(), "Receipt quote differs from pinned WETH")
+    required = receipt.get("requiredQuoteCurrency")
+    if required_quote:
+        # Declared by the artifact's ABI and read back from the deployed hook by the harness.
+        require(isinstance(required, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", required) and int(required, 16),
+                "Declared required quote missing from receipt")
+        require(receipt["quoteAsset"].lower() == required.lower(), "Receipt quote differs from declared required quote")
+    else:
+        require(required is None or (isinstance(required, str) and re.fullmatch(r"0x0{40}", required)),
+                "Undeclared required quote in receipt")
+        require(receipt["quoteAsset"].lower() == manifest["addresses"]["wrappedNative"].lower(), "Receipt quote differs from pinned WETH")
     for name in ("treasuryPaid", "ownerPaid", "authorPaid", "hookFeesCollected", "lpFeesCollected",
                  "tradeCount", "developerFeeBps", "authorFeeBps", "swapFeeModel", "expectedAuthorPaid", "expectedOwnerPaid"):
         require(name in receipt, f"Missing receipt field: {name}")
@@ -339,6 +364,16 @@ def qualify(output, rows, *, rpc_url=None):
             )
             env["HOOK_HAS_ORACLE"] = "true" if has_oracle else "false"
             inputs["HOOK_HAS_ORACLE"] = has_oracle
+            # Optional swap-admission declarations, also ABI-derived: a required quote currency
+            # replaces WETH as the launch quote; a pass authority makes buys carry SwapPass hookData.
+            required_quote = declared_view(abi, "requiredQuoteCurrency")
+            swap_pass = declared_view(abi, "swapPassSigner")
+            env["HOOK_REQUIRED_QUOTE"] = "true" if required_quote else "false"
+            env["HOOK_SWAP_PASS"] = "true" if swap_pass else "false"
+            env["HOOK_CONTRACT_NAME"] = row["contract"]
+            inputs["HOOK_REQUIRED_QUOTE"] = required_quote
+            inputs["HOOK_SWAP_PASS"] = swap_pass
+            inputs["HOOK_CONTRACT_NAME"] = row["contract"]
             # Economic vectors apply only to this repository's oracle-velocity reference,
             # not arbitrary admitted dynamic policies. Feature support remains ABI-derived.
             velocity_example = folder == ROOT / "hooks/dynamic-fee" and row["contract"] == "DynamicFeeHook"
@@ -360,7 +395,7 @@ def qualify(output, rows, *, rpc_url=None):
             require(hashlib.sha256(selected.read_bytes()).hexdigest() == measured["fileSha256"], "Selected artifact changed during execution")
             require(hashlib.sha256(manifest_path.read_bytes()).hexdigest() == manifest_hash, "Fork manifest changed during execution")
             require(hashlib.sha256(candidate_manifest.read_bytes()).hexdigest() == manifest_hash, "Candidate fork manifest changed during execution")
-            evidence = receipt_evidence(receipts, manifest, report["declared"])
+            evidence = receipt_evidence(receipts, manifest, report["declared"], required_quote)
             result.update(locallyQualified=True, receiptEvidence=evidence,
                           receiptEvidenceFileSha256=hashlib.sha256(receipts.read_bytes()).hexdigest())
             report["runtimeQualification"] = {
@@ -378,10 +413,13 @@ def qualify(output, rows, *, rpc_url=None):
             save_json(candidate / "qualification-result.json", result)
         qualified.append({"name": label, "evidence": f"{label}/qualification-result.json", "locallyQualified": True})
     qualify_oracle_composition(output, solc, environment, resolved_config, rpc)
+    qualify_declared_admission_fixture(output, solc, environment, resolved_config, rpc)
     save_json(output / "catalogue-result.json", {
         "upstream": json.loads((ROOT / "scripts/upstream.json").read_text()), "forkManifestSha256": manifest_hash,
         "hooks": qualified, "locallyQualified": True, "fixtureOnly": True, "productionAdmission": False,
         "oracleComposition": {"evidence": "oracle-composition/qualification-result.json",
+                              "locallyQualified": True, "fixtureOnly": True},
+        "declaredAdmission": {"evidence": "declared-admission/qualification-result.json",
                               "locallyQualified": True, "fixtureOnly": True},
     })
 
@@ -426,6 +464,57 @@ def qualify_oracle_composition(output, solc, environment, resolved_config, rpc):
     result["locallyQualified"] = True
     save_json(candidate / "qualification-result.json", result)
     print("Qualified optional oracle composition fixture", flush=True)
+
+
+def qualify_declared_admission_fixture(output, solc, environment, resolved_config, rpc):
+    """Exercise the optional admission declarations as a fixture, not a catalogue submission.
+
+    The fixture requires wrapped native as its quote, which no catalogue hook needs to cover,
+    and gates buys behind the CONTRIBUTING SwapPass, so the harness capability is qualified on
+    its own merits even with no declaring hook in the catalogue.
+    """
+    candidate = output / "declared-admission"
+    candidate.mkdir()
+    source, contract = "contracts/test/DeclaredAdmissionFixture.sol", "DeclaredAdmissionFixtureHook"
+    selected = candidate / "qualified-hook-artifact.json"
+    selected.write_bytes((ROOT / "out/DeclaredAdmissionFixture.sol" / f"{contract}.json").read_bytes())
+    selected.chmod(0o444)
+    measured = artifacts.artifact_evidence(selected)
+    metadata = artifacts.artifact_metadata(artifacts.load_json(selected.read_bytes()), selected)
+    require(metadata["settings"]["compilationTarget"] == {source: contract}, "Declared-admission fixture target mismatch")
+    pins = artifacts.source_inventory(measured, ROOT)
+    measured["compilerReconstruction"] = artifacts.reconstruct_artifact(
+        measured, pins, root=ROOT, solc=solc, output=candidate / "compiler-reconstruction")
+    measured["compilerSourceCorrespondenceVerified"] = True
+    save_json(candidate / "source-manifest.json", {"sources": pins})
+    rebuilt = artifacts.load_json((candidate / "compiler-reconstruction/compiler-output.json").read_bytes())
+    abi = artifacts.load_json(rebuilt["contracts"][source][contract]["metadata"])["output"]["abi"]
+    required_quote = declared_view(abi, "requiredQuoteCurrency")
+    swap_pass = declared_view(abi, "swapPassSigner")
+    require(required_quote and swap_pass, "Declared-admission fixture must declare both views")
+    declared = artifacts.load_json((ROOT / "hooks/reference-bound/integration.json").read_bytes())
+    manifest_path = output / "robinhood.json"
+    manifest = fork_manifest(manifest_path)
+    receipts = candidate / "receipt-evidence.json"
+    env, inputs = candidate_environment(declared, selected, manifest_path, receipts, environment)
+    env.update(HOOK_HAS_ORACLE="false", HOOK_REQUIRED_QUOTE="true", HOOK_SWAP_PASS="true", HOOK_CONTRACT_NAME=contract)
+    inputs.update(HOOK_HAS_ORACLE=False, HOOK_REQUIRED_QUOTE=True, HOOK_SWAP_PASS=True, HOOK_CONTRACT_NAME=contract)
+    config = candidate / "external-artifact.foundry.toml"
+    config.write_text(resolved_config + '\n[[profile.default.fs_permissions]]\naccess = "read-write"\npath = '
+                      + json.dumps(str(candidate)) + "\n")
+    env["FOUNDRY_CONFIG"] = str(config)
+    inputs["FOUNDRY_CONFIG"] = str(config)
+    save_json(candidate / "runtime-inputs.json", inputs)
+    result = {"locallyQualified": False, "fixtureOnly": True, "productionAdmission": False,
+              "artifactEvidence": measured}
+    save_json(candidate / "qualification-result.json", result)
+    run(["forge", "test", "--match-path", HARNESS, "--fork-url", rpc,
+         "--fork-block-number", str(manifest["forkBlock"]), "--root", str(ROOT), "-vvv"],
+        ROOT, candidate, "foundry-qualification", env)
+    result["receiptEvidence"] = receipt_evidence(receipts, manifest, declared, required_quote=True)
+    result["locallyQualified"] = True
+    save_json(candidate / "qualification-result.json", result)
+    print("Qualified declared-admission fixture", flush=True)
 
 
 def main():

@@ -470,6 +470,62 @@ class ReceiptEvidenceBoundaries(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "canonical uint256"):
                     self.parse()
 
+    def test_declared_required_quote_replaces_weth_only_when_declared(self):
+        csx = "0x" + "66" * 20
+        self.receipt.update(quoteAsset=csx, requiredQuoteCurrency=csx)
+        self.path.write_text(json.dumps(self.receipt))
+        self.assertEqual(checks.receipt_evidence(self.path, self.manifest, self.declared, True)["quoteAsset"], csx)
+        with self.assertRaisesRegex(ValueError, "Undeclared required quote"):
+            self.parse()
+        self.receipt["requiredQuoteCurrency"] = "0x" + "77" * 20
+        self.path.write_text(json.dumps(self.receipt))
+        with self.assertRaisesRegex(ValueError, "declared required quote"):
+            checks.receipt_evidence(self.path, self.manifest, self.declared, True)
+        self.receipt.pop("requiredQuoteCurrency")
+        self.path.write_text(json.dumps(self.receipt))
+        with self.assertRaisesRegex(ValueError, "missing from receipt"):
+            checks.receipt_evidence(self.path, self.manifest, self.declared, True)
+
+    def test_unset_required_quote_keeps_weth_rule(self):
+        self.receipt["requiredQuoteCurrency"] = "0x" + "00" * 20
+        self.assertEqual(self.parse()["quoteAsset"], self.manifest["addresses"]["wrappedNative"])
+
+    def test_declared_views_require_exact_shape(self):
+        good = {"type": "function", "name": "swapPassSigner", "inputs": [], "stateMutability": "pure",
+                "outputs": [{"type": "address"}]}
+        self.assertTrue(checks.declared_view([good], "swapPassSigner"))
+        self.assertFalse(checks.declared_view([{**good, "name": "other"}], "swapPassSigner"))
+        self.assertFalse(checks.declared_view([{**good, "type": "event"}], "swapPassSigner"))
+        for change in ({"inputs": [{"type": "uint256"}]}, {"stateMutability": "nonpayable"},
+                       {"outputs": [{"type": "bytes32"}]}, {"outputs": []}):
+            with self.subTest(change=change):
+                with self.assertRaisesRegex(ValueError, "constructor-independent pure getter"):
+                    checks.declared_view([{**good, **change}], "swapPassSigner")
+
+    def test_declarations_must_be_constructor_independent(self):
+        # The harness reads declarations from runtime code etched without a constructor, where a
+        # `view` getter over storage or immutables reads zero. Only `pure` (compiler-enforced
+        # constructor independence) is accepted; a view declaration is refused, not ignored.
+        for name in ("requiredQuoteCurrency", "swapPassSigner"):
+            view = {"type": "function", "name": name, "inputs": [], "stateMutability": "view",
+                    "outputs": [{"type": "address"}]}
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "constructor-independent pure getter"):
+                    checks.declared_view([view], name)
+
+    def test_overloaded_declaration_is_refused(self):
+        good = {"type": "function", "name": "requiredQuoteCurrency", "inputs": [], "stateMutability": "pure",
+                "outputs": [{"type": "address"}]}
+        overload = {**good, "inputs": [{"type": "uint256"}]}
+        with self.assertRaisesRegex(ValueError, "constructor-independent pure getter"):
+            checks.declared_view([good, overload], "requiredQuoteCurrency")
+
+    def test_declared_admission_fixture_is_constructor_independent(self):
+        source = (checks.ROOT / "contracts/test/DeclaredAdmissionFixture.sol").read_text()
+        for name in ("requiredQuoteCurrency", "swapPassSigner"):
+            with self.subTest(name=name):
+                self.assertRegex(source, rf"function {name}\(\) external pure returns \(address\)")
+
 
 if __name__ == "__main__":
     unittest.main()

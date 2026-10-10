@@ -21,7 +21,6 @@ contract PoolHookDeployerV1 {
 
     uint256 private constant MAX_CHUNK_SIZE = 24_575;
     uint256 private constant MAX_INIT_CODE_SIZE = 49_152;
-    uint256 private constant CONSTRUCTOR_ARGUMENT_SIZE = 18 * 32;
 
     address public immutable codeChunk0;
     address public immutable codeChunk1;
@@ -38,10 +37,8 @@ contract PoolHookDeployerV1 {
 
     constructor(bytes memory creationCode) {
         if (creationCode.length == 0) revert InvalidCreationCode();
-        if (
-            creationCode.length > MAX_CHUNK_SIZE * 2
-                || creationCode.length + CONSTRUCTOR_ARGUMENT_SIZE > MAX_INIT_CODE_SIZE
-        ) revert InitCodeTooLarge();
+        // _initCode checks the actual creation code plus encoded parameters against EIP-3860.
+        if (creationCode.length > MAX_CHUNK_SIZE * 2) revert InitCodeTooLarge();
         creationCodeHash = keccak256(creationCode);
         if (creationCode.length > MAX_CHUNK_SIZE) {
             codeChunk0 = SSTORE2.write(LibBytes.slice(creationCode, 0, MAX_CHUNK_SIZE));

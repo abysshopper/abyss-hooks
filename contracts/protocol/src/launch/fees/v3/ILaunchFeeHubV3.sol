@@ -4,6 +4,13 @@ pragma solidity ^0.8.28;
 import { ILaunchFeeHubV2 } from "../v2/ILaunchFeeHubV2.sol";
 import { ILaunchRegistryV2 } from "../../lifecycle/v2/ILaunchRegistryV2.sol";
 
+/// @notice Explicit immutable custody exclusions required by V3 fee hubs.
+/// @dev Available before sealing. Slots are locker, V4 manager, V4 hook, Abyss manager,
+///      Abyss pool; unsupported slots are zero. Missing/malformed reads fail closed.
+interface ILaunchFeeSourceCustodyV3 {
+    function custodyRecipients() external view returns (address[5] memory);
+}
+
 /// @notice Admission-authenticated economics frozen before canonical custody is sealed.
 /// @dev An unbound source has the all-zero tuple and no developer allocation. Source identity
 ///      is authenticated separately by configureSources, after its positions exist.

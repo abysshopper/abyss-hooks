@@ -12,7 +12,7 @@ import {
     ILaunchFeeRewardsV2
 } from "../v2/ILaunchFeeHubV2.sol";
 import { ILaunchRegistryV2 } from "../../lifecycle/v2/ILaunchRegistryV2.sol";
-import { ILaunchFeeHubV3, SourceTermsV3 } from "./ILaunchFeeHubV3.sol";
+import { ILaunchFeeHubV3, ILaunchFeeSourceCustodyV3, SourceTermsV3 } from "./ILaunchFeeHubV3.sol";
 
 interface ILaunchFeeTokenV3 {
     function balanceOf(address account) external view returns (uint256);
@@ -477,29 +477,15 @@ contract LaunchFeeHubV3 is ILaunchFeeHubV3, ReentrancyGuard {
         _excludeSourceCustody(source);
     }
 
-    /// @dev The unchanged source ABI has no custody enumeration. Canonical V4/Abyss sources
-    ///      expose these immutable getters; absent getters on other zero-author sources are
-    ///      not admission. These reads only exclude destinations and never grant entitlement.
+    /// @dev One explicit read preserves every venue's custody exclusions without probing
+    ///      unsupported getters. Revised hubs and sources must be deployed together.
     function _excludeSourceCustody(address source) private {
-        _excludeCustodyGetter(source, bytes4(keccak256("locker()")));
-        _excludeCustodyGetter(source, bytes4(keccak256("poolManager()")));
-        _excludeCustodyGetter(source, bytes4(keccak256("hookRoot()")));
-        _excludeCustodyGetter(source, bytes4(keccak256("positionManager()")));
-        _excludeCustodyGetter(source, bytes4(keccak256("pool()")));
-    }
-
-    function _excludeCustodyGetter(address source, bytes4 selector) private {
-        bool ok;
-        uint256 raw;
-        assembly ("memory-safe") {
-            let ptr := mload(0x40)
-            mstore(ptr, selector)
-            ok := staticcall(gas(), source, ptr, 4, ptr, 32)
-            ok := and(ok, eq(returndatasize(), 32))
-            raw := mload(ptr)
-        }
-        if (ok && raw <= type(uint160).max && raw != 0) {
-            _excludedRecipients[address(uint160(raw))] |= SYSTEM_RECIPIENT_EXCLUSION;
+        address[5] memory recipients = ILaunchFeeSourceCustodyV3(source).custodyRecipients();
+        for (uint256 i; i < recipients.length; ++i) {
+            address recipient = recipients[i];
+            if (recipient != address(0)) {
+                _excludedRecipients[recipient] |= SYSTEM_RECIPIENT_EXCLUSION;
+            }
         }
     }
 

@@ -24,17 +24,19 @@ scripts/install-deps.sh
 python scripts/check_hooks.py --output evidence/qualification
 ```
 
-Pools use zero LP fees. CI deploys fresh actual V6 launch infrastructure on a public-chain fork, launches each example with real WETH, and checks hook-delta accounting and royalty payouts in both currency modes. The dynamic hook's [response matrix](hooks/dynamic-fee/review.md#expanded-response-verification) checks 4,224 actual charged swaps across eight policies, four price rises, three observation intervals, eleven idle durations and both trade directions. Sequential trading also checks oracle-clamp catch-up, return to the minimum and reactivation. Historical deployed V5 infrastructure is not upgraded or relabelled.
+Pools use zero LP fees. The local qualification runner creates isolated Black Market launch contracts from the external source snapshot in `contracts/protocol/`, uses the fork's real manager, oracle factory and WETH, and checks hook-delta accounting and royalty payouts. These test deployments are not production registry admission. The dynamic hook's [response matrix](hooks/dynamic-fee/review.md#expanded-response-verification) checks 4,224 actual charged swaps across eight policies, four price rises, three observation intervals, eleven idle durations and both trade directions. Sequential trading also checks oracle-clamp catch-up, return to the minimum and reactivation.
 
 Additional [granular regressions](hooks/dynamic-fee/review.md#granular-boundaries-and-trading) execute every second of total signal age from 2 through 300, adjacent-second cap/floor transitions, adjacent raw-unit fee rounding, variable-size exact-input/output swaps, continuous mixed trading and same-timestamp blocks.
 
-CI uses the [dRPC public Robinhood endpoint](https://drpc.org/chainlist/robinhood-mainnet-rpc) because the default public RPC can reject fork reads with a Cloudflare challenge. Local qualification accepts `--rpc-url https://robinhood.drpc.org`; the chain ID, fork block and deployed-code hash checks remain mandatory, and evidence records the selected endpoint.
+Local qualification accepts `--rpc-url https://robinhood.drpc.org` because the default public RPC can reject fork reads with a Cloudflare challenge. Chain ID, fork block and deployed-code hash checks remain mandatory.
+
+Automatic CI is temporarily paused. The Hooks workflow is retained for deliberate manual runs after re-enabling it; do not dispatch CI or wait for missing checks during the pause. Run applicable checks locally and disclose that GitHub CI did not run.
 
 Maintainers review each submission. Production registry admission requires separate approval.
 
 ## AI agent guidance
 
-[AGENTS.md](AGENTS.md) and the portable skills in `.agents/skills/` are generated with [rulesync](https://rulesync.dyoshikawa.com/). The skills cover hook authoring, qualification, PR review, audit-informed V4 hook security review, and rulesync maintenance. Authoring and security-review guidance link official Uniswap documentation and publicly available audits; using them does not constitute an independent audit. Apply the [PR review skill](.agents/skills/pr-review/SKILL.md) to the complete diff before opening a PR or pushing updates; self-review does not replace independent maintainer review or exact-head CI.
+[AGENTS.md](AGENTS.md) and the portable skills in `.agents/skills/` are generated with [rulesync](https://rulesync.dyoshikawa.com/). The skills cover hook authoring, qualification, PR review, audit-informed V4 hook security review, and rulesync maintenance. Authoring and security-review guidance link official Uniswap documentation and publicly available audits; using them does not constitute an independent audit. Apply the [PR review skill](.agents/skills/pr-review/SKILL.md) to the complete diff before opening a PR or pushing updates. Self-review does not replace independent maintainer review; inspect exact-head CI when enabled and disclose actual local evidence while it is paused.
 
 Edit `.rulesync/rules/overview.md` or `.rulesync/skills/<name>/SKILL.md`, not the generated files. With Node.js 22 or later, regenerate and check for drift from the repository root:
 

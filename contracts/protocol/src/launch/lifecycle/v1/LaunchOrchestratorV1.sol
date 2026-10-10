@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import { ReentrancyGuard } from "solady/utils/ReentrancyGuard.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+import { IAbyssLaunchBurnableToken } from "../../../interfaces/IAbyssLaunch.sol";
 import { ILaunchFeeSourceV1 } from "../../fees/v1/ILaunchFeeHubV1.sol";
 import {
     LaunchPlanV1,
@@ -202,8 +203,8 @@ contract LaunchOrchestratorV1 is ILaunchLifecycleV1, ReentrancyGuard {
                 || context.token != token
         ) return false;
         if (context.operation == LaunchOperationV1.Inventory) {
-            return caller == address(this) && from == address(this) && to == context.recipient
-                && amount == context.amount;
+            return caller == address(this) && from == address(this) && to == address(0)
+                && context.recipient == address(0) && amount == context.amount;
         }
         if (
             context.operation != LaunchOperationV1.Mint
@@ -367,6 +368,7 @@ contract LaunchOrchestratorV1 is ILaunchLifecycleV1, ReentrancyGuard {
         for (uint32 i; i < progress.marketCount; ++i) {
             tokenSpent += _mint(plan, launchId, i, progress.token);
         }
+        _burnRemainingInventory(launchId, progress.token, plan.token.supply - tokenSpent, tokenSpent);
         receipt = LaunchReceiptV1(
             launchId,
             progress.planHash,
@@ -385,33 +387,12 @@ contract LaunchOrchestratorV1 is ILaunchLifecycleV1, ReentrancyGuard {
         ILaunchLifecycleFeeHubV1(progress.feeHub).configureSources(sources, progress.rewards);
         if (!ILaunchLifecycleFeeHubV1(progress.feeHub).finalized()) revert InvalidBinding();
         // Every externally callable step (refund transfers of admitted callback-capable
-        // quote assets, inventory delivery) runs BEFORE the terminal opening boundary, so
+        // quote assets, inventory burning) runs BEFORE the terminal opening boundary, so
         // a callback-driven venue mutation during those steps cannot land after any
         // market's final continuity validation. The terminal open revalidates every
         // market's committed canonical state and is the last venue interaction before
         // the token activates and the launch becomes Active.
         _refund(launchId, progress.creator);
-        uint256 inventory = plan.token.supply - tokenSpent;
-        if (SafeTransferLib.balanceOf(progress.token, address(this)) != inventory) {
-            revert InexactTransfer();
-        }
-        if (inventory != 0) {
-            _context = LaunchExecutionContextV1(
-                launchId,
-                0,
-                LaunchOperationV1.Inventory,
-                address(0),
-                address(this),
-                progress.token,
-                address(0),
-                address(0),
-                address(0),
-                plan.token.inventoryRecipient,
-                inventory
-            );
-            _sendExact(progress.token, plan.token.inventoryRecipient, inventory);
-            delete _context;
-        }
         _openMarkets(plan, launchId, progress.marketCount);
         delete _context;
         ILaunchLifecycleTokenV1(progress.token).activate();
@@ -423,6 +404,33 @@ contract LaunchOrchestratorV1 is ILaunchLifecycleV1, ReentrancyGuard {
             progress.marketCount,
             progress.positionCount
         );
+    }
+
+    function _burnRemainingInventory(
+        bytes32 launchId, address token, uint256 inventory, uint256 tokenSpent
+    ) private {
+        if (SafeTransferLib.balanceOf(token, address(this)) != inventory) revert InexactTransfer();
+        if (inventory != 0) {
+            _context = LaunchExecutionContextV1(
+                launchId,
+                0,
+                LaunchOperationV1.Inventory,
+                address(0),
+                address(this),
+                token,
+                address(0),
+                address(0),
+                address(0),
+                address(0),
+                inventory
+            );
+            IAbyssLaunchBurnableToken(token).burn(inventory);
+            delete _context;
+        }
+        if (
+            SafeTransferLib.balanceOf(token, address(this)) != 0
+                || IAbyssLaunchBurnableToken(token).totalSupply() != tokenSpent
+        ) revert InexactTransfer();
     }
 
     function _validateReadyMarkets(

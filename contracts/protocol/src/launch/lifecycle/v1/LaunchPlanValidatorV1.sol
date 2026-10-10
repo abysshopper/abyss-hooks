@@ -138,7 +138,7 @@ contract LaunchPlanValidatorV1 {
                 registry.requireEligible(market.adapterId, market.profileId, market.configVersion, capabilities | LaunchCapabilitiesV1.MULTI_POSITION);
             }
         }
-        if (allocated > plan.token.supply) revert InvalidMarket();
+        if (allocated != plan.token.supply) revert InvalidMarket();
     }
 
     /// @dev Exact committed position count for one market, decoded with the venue's own

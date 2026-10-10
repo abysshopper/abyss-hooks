@@ -12,7 +12,7 @@ description: >-
 
 Before opening a PR or pushing updates to an existing PR, review the complete proposed diff against its target base using this skill. Apply it to hook submissions; for maintainer infrastructure PRs, review the applicable verification, authority and reporting criteria without imposing hook-folder-only scope. Fix actionable findings before publishing. Re-review the complete diff after fixes, not just the latest patch.
 
-Use the `hook-qualification` skill for applicable checks. Report commands actually run, evidence paths, failures and missing prerequisites. Before opening, CI may not exist yet; disclose that rather than claiming it passed. After pushing, inspect exact-head Actions and their artifacts before requesting acceptance. Self-review does not replace independent maintainer review or successful exact-head CI.
+Use the `hook-qualification` skill for applicable checks. Report commands actually run, evidence paths, failures and missing prerequisites. When CI is enabled, inspect exact-head Actions and their artifacts before requesting acceptance. During the documented maintainer CI pause, do not dispatch, enable or wait for Actions; record the reviewed head, actual local evidence and unrun checks, and state "CI not run: explicitly paused". Self-review does not replace independent maintainer review.
 
 For technical hook auditing, apply the `hook-security-review` skill. Its official documentation and public-audit lessons supplement, not replace, repository-specific qualification and independent audits.
 
@@ -30,7 +30,7 @@ Verify the contributor's "no base change" claim rather than trusting it: `git di
 
 ## Require independent verification
 
-- Acceptance requires successful CI on the exact head commit and inspection of its evidence. Missing checks or a run awaiting approval are not successful verification or observed code failures.
+- When CI is enabled, require successful exact-head checks and inspect their evidence. During the maintainer-authorized CI pause, do not dispatch or wait for runs; use applicable local checks and explicitly state that CI did not run. Missing CI is not successful CI.
 - Separate declared inputs (`integration.json` values, terms, authorId) from proven behavior (qualification evidence). Declarations are proposals, not facts.
 - Reproduce locally when feasible: structure check, unit suite, and full fork qualification per the `hook-qualification` skill. Compare measured artifact sizes and hashes against the PR's claims. Reuse applicable observed evidence only when code and inputs are unchanged; label reused evidence explicitly.
 - Watch for coverage gaps the harness cannot see. A fork-only permissive signature authority proves gating logic but not the real signature scheme. For EIP-712/ECDSA passes, require a genuinely signed end-to-end test using an independently constructed digest and a real test key, including buyer, domain, signed-field and replay rejection. Do not require or expose production private keys.

@@ -11,12 +11,13 @@ import { PoolId, PoolIdLibrary } from "@uniswap/v4-core/src/types/PoolId.sol";
 import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
 import { SharedLaunchFeeHookV2 } from "../../../hooks/v4/SharedLaunchFeeHookV2.sol";
 import { ILaunchFeeSourceV1 } from "../v1/ILaunchFeeHubV1.sol";
+import { ILaunchFeeSourceCustodyV3 } from "../v3/ILaunchFeeHubV3.sol";
 import { V4FeeLiquidityLockerV2 } from "./V4FeeLiquidityLockerV2.sol";
 
 /// @notice Hub-only, full-pool collection of sealed permanent LP positions and registered hook fees.
 /// @dev Deploy before root registration/locking. Finalization requires initialization and sealing.
 ///      Every collection includes both venues, even when the hook fee or its pending balance is zero.
-contract V4FeeCollectorV2 is ILaunchFeeSourceV1, ReentrancyGuard {
+contract V4FeeCollectorV2 is ILaunchFeeSourceV1, ILaunchFeeSourceCustodyV3, ReentrancyGuard {
     using PoolIdLibrary for PoolKey;
 
     error Unauthorized();
@@ -71,6 +72,12 @@ contract V4FeeCollectorV2 is ILaunchFeeSourceV1, ReentrancyGuard {
         token0 = asset0;
         token1 = asset1;
         _key = key_;
+    }
+
+    function custodyRecipients() external view override returns (address[5] memory result) {
+        result[0] = address(locker);
+        result[1] = address(poolManager);
+        result[2] = address(hookRoot);
     }
 
     function poolKey() external view returns (PoolKey memory) {

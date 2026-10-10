@@ -11,7 +11,7 @@ For tooling changes: describe the reason and catalogue-wide impact instead.
 
 ## Verification
 
-- Actions run and registration-input report:
+- CI status (currently paused; do not dispatch) and registration-input report:
 - Local commands actually run and results:
 - Failed checks, unexercised cases and remaining risks:
 
@@ -27,7 +27,7 @@ For tooling changes: describe the reason and catalogue-wide impact instead.
 
 Record the decision in a review/comment against the current PR commit:
 
-- [ ] Inspect required CI results, input report and measured artifact hashes.
+- [ ] Inspect local checks, input report and measured artifact hashes during the CI pause; require exact-head Actions evidence when CI is re-enabled.
 - [ ] Review formula, boundaries, complete source/dependency graph and authority.
 - [ ] Review proposed identity, required payment rate, fee model, terms and bounds; identify unproven claims.
 - [ ] Review tooling/pin changes independently.

@@ -1,4 +1,4 @@
-![Abyss](assets/abyss-social.webp)
+![Abyss](assets/abyss-ziggurat-v3-pale-text-1500x500.png)
 
 # Abyss Hooks
 

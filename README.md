@@ -7,8 +7,8 @@ Contribute pool-bound Uniswap V4 fee hooks to Black Market.
 ## Submit a hook
 
 1. Copy the [static example](hooks/reference-bound) or [DynamicFeeHook example](hooks/dynamic-fee) into `hooks/<your-hook>`.
-2. Declare your author payment and any custom fee schedule; complete `hook.json`, `integration.json`, and `review.md`.
-3. Run the checks below and open a pull request.
+2. Declare your author payment and any custom fee schedule; complete `hook.json`, `integration.json`, and `review.md`. Point `test/Smoke.t.sol` at your actual hook artifact and add policy tests.
+3. Run local qualification with `--record`, review and commit the compact `provenance.json` with your sources and tests, then open a pull request.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for hook requirements and developer royalty terms.
 
@@ -19,16 +19,20 @@ The shared base is oracle-free. The dynamic example opts into the [abstract trun
 Requires Python 3.12 and the [pinned Foundry release](CONTRIBUTING.md#local-checks).
 
 ```sh
-python -m pip install -r scripts/requirements.txt
+python3.12 -m pip install -r scripts/requirements.txt
 scripts/install-deps.sh
-python scripts/check_hooks.py --output evidence/qualification
+python3.12 scripts/check_hooks.py --hook <slug> --output evidence/<unique-run> --rpc-url https://robinhood.drpc.org --record
 ```
 
-Pools use zero LP fees. The local qualification runner creates isolated Black Market launch contracts from the external source snapshot in `contracts/protocol/`, uses the fork's real manager, oracle factory and WETH, and checks hook-delta accounting and royalty payouts. These test deployments are not production registry admission. The dynamic hook's [response matrix](hooks/dynamic-fee/review.md#expanded-response-verification) checks 4,224 actual charged swaps across eight policies, four price rises, three observation intervals, eleven idle durations and both trade directions. Sequential trading also checks oracle-clamp catch-up, return to the minimum and reactivation.
+Replace `<slug>` with your hook folder and `<unique-run>` with a fresh identifier. The runner independently reconstructs the exact artifact, executes mandatory inherited smoke tests and separate contributor policy tests, prints named test results and actual receipts, and writes full logs, JSON and `RESULTS.md` into the ignored output directory. Failed, skipped or incomplete mandatory coverage is not qualification. Only a successful full run with `--record` writes `hooks/<slug>/provenance.json`; it never commits or pushes.
+
+Pools use zero LP fees. The local qualification runner creates isolated Black Market launch contracts from the external source snapshot in `contracts/protocol/`, uses the fork's real venues and the test-configured quote asset, and checks hook-delta accounting and royalty payouts. Test setup and inherited checks are reviewed assumptions, not a sandbox or proof of arbitrary-hook safety. These test deployments are not production registry admission. The dynamic hook's [response matrix](hooks/dynamic-fee/review.md#expanded-response-verification) checks 4,224 actual charged swaps across eight policies, four price rises, three observation intervals, eleven idle durations and both trade directions. Sequential trading also checks oracle-clamp catch-up, return to the minimum and reactivation.
 
 Additional [granular regressions](hooks/dynamic-fee/review.md#granular-boundaries-and-trading) execute every second of total signal age from 2 through 300, adjacent-second cap/floor transitions, adjacent raw-unit fee rounding, variable-size exact-input/output swaps, continuous mixed trading and same-timestamp blocks.
 
 Local qualification accepts `--rpc-url https://robinhood.drpc.org` because the default public RPC can reject fork reads with a Cloudflare challenge. Chain ID, fork block and deployed-code hash checks remain mandatory.
+
+Before attaching provenance to a GitHub PR, review the compact record and commit only that file with the selected sources, tests and review. Keep full logs local; never publish credentials, wallet keys or admission secrets. `python3.12 scripts/check_hooks.py --hook <slug> --check-provenance` checks recorded source, test, harness and tool identity without rerunning the chain or proving current-chain behavior. See [Local checks](CONTRIBUTING.md#local-checks) for setup and evidence interpretation.
 
 Automatic CI is temporarily paused. The Hooks workflow is retained for deliberate manual runs after re-enabling it; do not dispatch CI or wait for missing checks during the pause. Run applicable checks locally and disclose that GitHub CI did not run.
 

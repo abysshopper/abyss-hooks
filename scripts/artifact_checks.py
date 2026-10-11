@@ -50,14 +50,16 @@ def artifact_metadata(artifact, path):
     return metadata
 
 
-def artifact_evidence(path):
+def artifact_evidence(path, *, enforce_portability=True):
     raw = path.read_bytes()
     artifact = load_json(raw)
     metadata = artifact_metadata(artifact, path)
     creation = bytes.fromhex(artifact["bytecode"]["object"].removeprefix("0x"))
     runtime = bytes.fromhex(artifact["deployedBytecode"]["object"].removeprefix("0x"))
-    require(0 < len(runtime) <= 24576, "Runtime portability limit")
-    require(0 < len(creation) <= 49152, "Creation portability limit")
+    require(bool(runtime) and bool(creation), "Artifact must contain executable bytes")
+    if enforce_portability:
+        require(len(runtime) <= 24576, "Runtime portability limit")
+        require(len(creation) <= 49152, "Creation portability limit")
     require(not artifact["bytecode"].get("linkReferences") and not artifact["deployedBytecode"].get("linkReferences"),
             "Artifact must have fully linked executable bytes")
     references = json.dumps(artifact["deployedBytecode"].get("immutableReferences", {}), sort_keys=True, separators=(",", ":")).encode()
@@ -123,7 +125,10 @@ def reconstruct_artifact(measured, pins, *, root, solc, output=None):
         sources[name] = {"content": content.decode("utf-8")}
     compiler_input = {"language": "Solidity", "sources": sources, "settings": {
         **SETTINGS, "remappings": metadata["settings"].get("remappings", []),
-        "outputSelection": {source_name: {contract: ["evm.bytecode", "evm.deployedBytecode", "metadata"]}},
+        "outputSelection": {
+            source_name: {contract: ["evm.bytecode", "evm.deployedBytecode", "metadata"]},
+            "*": {"": ["ast"]},
+        },
     }}
     encoded = json.dumps(compiler_input, sort_keys=True, separators=(",", ":"))
     command = [str(solc), "--standard-json", "--no-import-callback"]

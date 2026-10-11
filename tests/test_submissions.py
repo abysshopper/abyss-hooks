@@ -25,6 +25,8 @@ class SubmissionBoundaries(unittest.TestCase):
         self.save()
         (self.folder / "Sample.sol").write_text("// SPDX-License-Identifier: MIT\ncontract Sample {}\n")
         (self.folder / "review.md").write_text("Risks disclosed by contributor.\n")
+        (self.folder / "test").mkdir()
+        (self.folder / "test" / "Smoke.t.sol").write_text("// SPDX-License-Identifier: MIT\ncontract SampleSmokeTest {}\n")
         self.integration = dict(
             schemaVersion=2, kind="submission", authorId="0x1111111111111111111111111111111111111111",
             developerFeeBps=0, swapFeeModel="static", terms="No developer allocation requested.",
@@ -68,6 +70,37 @@ class SubmissionBoundaries(unittest.TestCase):
         (self.folder / "review.md").unlink()
         with self.assertRaisesRegex(ValueError, "review.md"):
             checks.submissions(self.root)
+
+    def test_required_smoke_file_and_plain_test_directory(self):
+        smoke = self.folder / "test" / "Smoke.t.sol"
+        smoke.unlink()
+        with self.assertRaisesRegex(ValueError, "Missing required test/Smoke"):
+            checks.submissions(self.root)
+        smoke.write_text("// SPDX-License-Identifier: MIT\ncontract SampleSmokeTest {}\n")
+        (self.folder / "test" / "nested").mkdir()
+        with self.assertRaisesRegex(ValueError, "regular test files"):
+            checks.submissions(self.root)
+
+    def test_policy_suites_allowed_but_scripts_and_symlinks_rejected(self):
+        policy = self.folder / "test" / "Policy.t.sol"
+        policy.write_text("// SPDX-License-Identifier: MIT\ncontract SamplePolicyTest {}\n")
+        self.assertEqual(len(checks.submissions(self.root)), 1)
+        policy.unlink()
+        policy.symlink_to(self.folder / "Sample.sol")
+        with self.assertRaisesRegex(ValueError, "regular test files"):
+            checks.submissions(self.root)
+        policy.unlink()
+        (self.folder / "test" / "run.py").write_text("print('untrusted')")
+        with self.assertRaisesRegex(ValueError, "Unexpected test file"):
+            checks.submissions(self.root)
+
+    def test_compact_provenance_excluded_from_input_hashes(self):
+        before = checks.submission_source_hashes(self.folder)
+        (self.folder / "provenance.json").write_text('{"schema":"abyss-hooks.local-provenance.v1"}')
+        self.assertEqual(checks.submission_source_hashes(self.folder), before)
+        smoke = self.folder / "test" / "Smoke.t.sol"
+        smoke.write_text(smoke.read_text() + "// changed scenario\n")
+        self.assertNotEqual(checks.submission_source_hashes(self.folder), before)
 
     def test_license_mismatch_rejected(self):
         self.row["license"] = "Apache-2.0"
@@ -373,15 +406,20 @@ class ReceiptEvidenceBoundaries(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "receipt.json"
         self.manifest = {"addresses": {"wrappedNative": "0x" + "11" * 20}}
-        self.declared = {"developerFeeBps": 500, "swapFeeModel": "static"}
+        self.declared = {"developerFeeBps": 500, "swapFeeModel": "static", "bounds": {"feeModeFlags": 1}}
         self.receipt = {
             "schema": "abyss-hooks.launch-receipts.v1", "token": "0x" + "22" * 20,
             "poolId": "0x" + "33" * 32, "hook": "0x" + "44" * 20,
             "quoteAsset": self.manifest["addresses"]["wrappedNative"], "treasuryPaid": "10",
             "ownerPaid": "190", "authorPaid": "10", "hookFeesCollected": "200", "lpFeesCollected": "0",
-            "tradeCount": 2, "developerFeeBps": 500, "authorFeeBps": 500, "swapFeeModel": 0,
+            "tradeCount": 4, "totalTradeCount": 4, "developerFeeBps": 500, "authorFeeBps": 500, "swapFeeModel": 0,
             "expectedAuthorPaid": "10", "expectedOwnerPaid": "190",
         }
+        mode = {**self.receipt, "feeMode": 0, "principalBefore": "1000", "principalAfter": "1000", "openingBuyQuote": "200"}
+        mode["cases"] = [dict(direction=direction, amountMode=amount, status="success", inputAmount="100", outputAmount="90",
+                              feePaid="1", ratePips=10000, expectedRevert="0x")
+                         for direction in ("buy", "sell") for amount in ("exact-input", "exact-output")]
+        self.receipt["modes"] = [mode]
 
     def parse(self):
         self.path.write_text(json.dumps(self.receipt))
@@ -406,14 +444,46 @@ class ReceiptEvidenceBoundaries(unittest.TestCase):
                     self.parse()
                 self.receipt[name] = original
 
-    def test_hook_only_receipts_reject_lp_proceeds_and_missing_hook_fees(self):
-        for field, value in (("lpFeesCollected", 1), ("hookFeesCollected", 0)):
-            with self.subTest(field=field):
-                original = self.receipt[field]
-                self.receipt[field] = value
-                with self.assertRaises(ValueError):
-                    self.parse()
-                self.receipt[field] = original
+    def test_collected_lp_proceeds_rejected_but_zero_hook_fees_valid(self):
+        self.receipt["lpFeesCollected"] = 1
+        with self.assertRaises(ValueError):
+            self.parse()
+        self.receipt["lpFeesCollected"] = 0
+        self.receipt.update(hookFeesCollected=0, ownerPaid=0, expectedOwnerPaid=0, authorPaid=0, expectedAuthorPaid=0,
+                            treasuryPaid=0)
+        self.receipt["modes"][0].update(hookFeesCollected=0, ownerPaid=0, expectedOwnerPaid=0, authorPaid=0,
+                                         expectedAuthorPaid=0, treasuryPaid=0)
+        self.assertEqual(self.parse()["hookFeesCollected"], 0)
+
+    def test_non_weth_quote_valid_when_recorded_consistently(self):
+        quote = "0x" + "55" * 20
+        self.receipt["quoteAsset"] = quote
+        self.receipt["modes"][0]["quoteAsset"] = quote
+        self.assertEqual(self.parse()["quoteAsset"], quote)
+
+    def test_all_declared_modes_and_four_trade_branches_required(self):
+        self.declared["bounds"]["feeModeFlags"] = 3
+        with self.assertRaisesRegex(ValueError, "every declared fee mode"):
+            self.parse()
+        self.declared["bounds"]["feeModeFlags"] = 1
+        self.receipt["modes"][0]["cases"].pop()
+        with self.assertRaisesRegex(ValueError, "four named"):
+            self.parse()
+
+    def test_policy_rejections_are_recorded_not_skipped(self):
+        case = self.receipt["modes"][0]["cases"][0]
+        case.update(status="rejected", expectedRevert="0x12345678")
+        self.receipt["tradeCount"] = self.receipt["totalTradeCount"] = 3
+        self.receipt["modes"][0]["tradeCount"] = 3
+        self.assertEqual(self.parse()["modes"][0]["cases"][0]["status"], "rejected")
+        case["expectedRevert"] = "0x"
+        with self.assertRaisesRegex(ValueError, "concrete expected revert"):
+            self.parse()
+
+    def test_collection_must_not_change_principal(self):
+        self.receipt["modes"][0]["principalAfter"] = "999"
+        with self.assertRaisesRegex(ValueError, "changed principal"):
+            self.parse()
 
     def test_paid_and_runtime_author_rates_must_each_equal_declaration(self):
         for field in ("developerFeeBps", "authorFeeBps"):
@@ -429,6 +499,7 @@ class ReceiptEvidenceBoundaries(unittest.TestCase):
         for model, expected in (("static", 0), ("dynamic", 1)):
             self.declared["swapFeeModel"] = model
             self.receipt["swapFeeModel"] = expected
+            self.receipt["modes"][0]["swapFeeModel"] = expected
             self.assertEqual(self.parse()["swapFeeModel"], expected)
             for actual in (1 - expected, 2):
                 with self.subTest(model=model, actual=actual):
@@ -448,6 +519,8 @@ class ReceiptEvidenceBoundaries(unittest.TestCase):
         self.declared["developerFeeBps"] = 0
         self.receipt.update(developerFeeBps=0, authorFeeBps=0, authorPaid="0",
                             expectedAuthorPaid="0", ownerPaid="200", expectedOwnerPaid="200")
+        self.receipt["modes"][0].update(developerFeeBps=0, authorFeeBps=0, authorPaid="0",
+                                         expectedAuthorPaid="0", ownerPaid="200", expectedOwnerPaid="200")
         self.assertEqual(self.parse()["developerFeeBps"], 0)
         self.receipt["developerFeeBps"] = 500
         with self.assertRaisesRegex(ValueError, "required author rate"):

@@ -7,12 +7,21 @@ Contribute pool-bound Uniswap V4 fee hooks to Black Market.
 ## Submit a hook
 
 1. Copy the [static example](hooks/reference-bound) or [DynamicFeeHook example](hooks/dynamic-fee) into `hooks/<your-hook>`.
-2. Declare your author payment and any custom fee schedule; complete `hook.json`, `integration.json`, and `review.md`. Point `test/Smoke.t.sol` at your actual hook artifact and add policy tests.
+2. Declare your author payment and hook-specific fee policy; complete `hook.json` schema 2 with its required `policy`, unchanged `integration.json` schema 2, and `review.md`. Point `test/Smoke.t.sol` at your actual hook artifact and add policy tests.
 3. Run local qualification with `--record`, review and commit the compact `provenance.json` with your sources and tests, then open a pull request.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for hook requirements and developer royalty terms.
 
 The shared base is oracle-free. The dynamic example opts into the [abstract truncated-oracle template](CONTRIBUTING.md#optional-truncated-oracle) to raise fees on faster observed price rises. Creators choose independent minimum, maximum and sensitivity per pool, frozen at launch. It remains one submitted hook, not another deployment.
+
+Each checked-in `hook.json.policy` describes the formula (explanatory text, never executable),
+the three creator fee parameters and their `usedByRate` flags, the runtime oracle/history
+dependency, boundary behavior and risks. Migrate `hook.json` version 1 by changing only its
+version to 2 and adding this declaration; all other existing fields and the integration
+contract stay unchanged. Static policies use only the maximum to calculate the rate;
+dynamic policies declare their own parameter usage rather than inheriting a universal
+reference formula. `oracle.required: false` does not waive existing oracle factory/config
+validation. See the [exact policy contract](CONTRIBUTING.md#hook-manifest-and-policy-declaration).
 
 ## Run the checks
 
@@ -32,7 +41,7 @@ Additional [granular regressions](hooks/dynamic-fee/review.md#granular-boundarie
 
 Local qualification accepts `--rpc-url https://robinhood.drpc.org` because the default public RPC can reject fork reads with a Cloudflare challenge. Chain ID, fork block and deployed-code hash checks remain mandatory.
 
-For machine-readable launch controls, run `python3.12 scripts/check_hooks.py --structure-only --output evidence/describe-<unique-run>` and read `configurationDescription` in each hook's registration-inputs JSON. It derives typed units, limits and fixed values from existing declarations without another module system. Apply the [schema and cross-field constraint contract](CONTRIBUTING.md#machine-readable-launch-controls); the description is not a complete launch configuration or policy approval.
+For machine-readable launch controls, run `python3.12 scripts/check_hooks.py --structure-only --output evidence/describe-<unique-run>` and read `configurationDescription` in each hook's registration-inputs JSON. It derives typed units, limits and fixed values from the existing integration/base rules and uses `hook.json.policy.parameters` for the three fee settings' descriptions and `usedByRate` annotations. `sourceIdentity.policy` contains the checked-in declaration, bound by existing manifest/source file hashes; the full policy is not duplicated in `configurationDescription`. Apply both the [JSON Schema and cross-field constraint contract](CONTRIBUTING.md#machine-readable-launch-controls), unchanged by this migration. This declared metadata is not runtime proof, an audit, qualification or admission approval, nor a complete launch configuration. `hook.json` remains the sole authored policy source; there is no new registry, payment path or schema file.
 
 Before attaching provenance to a GitHub PR, review the compact record and commit only that file with the selected sources, tests and review. Keep full logs local; never publish credentials, wallet keys or admission secrets. `python3.12 scripts/check_hooks.py --hook <slug> --check-provenance` checks recorded source, test, harness and tool identity without rerunning the chain or proving current-chain behavior. See [Local checks](CONTRIBUTING.md#local-checks) for setup and evidence interpretation.
 

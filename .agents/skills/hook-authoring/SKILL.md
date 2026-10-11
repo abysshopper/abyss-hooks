@@ -10,7 +10,7 @@ description: >-
 
 ## Read the contract first
 
-Read `CONTRIBUTING.md` sections Submission, Hook requirements, Fees and author payment, and Optional truncated oracle. Inspect `hooks/reference-bound/` for static policies or `hooks/dynamic-fee/` for dynamic policies, including their manifests and review. Read the shared base and any inherited template before overriding policy seams.
+Read `CONTRIBUTING.md` sections Submission (including Hook manifest and policy declaration and Machine-readable launch controls), Hook requirements, Fees and author payment, and Optional truncated oracle. Inspect `hooks/reference-bound/` for static policies or `hooks/dynamic-fee/` for dynamic policies, including their manifests and review. Read the shared base and any inherited template before overriding policy seams.
 
 Read `SECURITY.md` before handling contributed code or evidence. Use the [hook-security-review skill](../hook-security-review/SKILL.md) for security-sensitive authoring: fee math, new external reads/selectors or assembly, oracle policy, lifecycle assumptions, and artifact/admission identity. Inheritance is not a sandbox; review the complete concrete artifact, not just the override.
 
@@ -30,8 +30,35 @@ Read `SECURITY.md` before handling contributed code or evidence. Use the [hook-s
 5. Declare `authorFeeBps()` and match `developerFeeBps` in the integration manifest. New submissions use `kind: submission` and a nonzero stable 20-byte `authorId`, not a live payout wallet. Do not fabricate an author's identity or consent; obtain missing author/economic terms from the contributor before completing a submission.
 6. Static hooks charge the creator's configured maximum. Dynamic hooks explicitly declare `SwapFeeModel.Dynamic` and implement read-only `_calculateRate(LaunchHookFeeContextV2 memory)` within the frozen bounds. Preserve floor rounding, both fee modes, exact-input/output behavior, and rate freezing before oracle observations.
 7. For oracle policies, cover genuine warm-up, flat/falling movement, idle decay, same-timestamp observations, and history rejection as applicable to the requested policy. Do not impose the reference dynamic formula on unrelated policies.
-8. Update `hook.json` schema 1 and `integration.json` schema 2 without extra or duplicate fields. Use the exact field table and limits in `CONTRIBUTING.md`, including declared registry bounds and supported fee modes.
+8. Use `hook.json` schema 2 with its required hook-specific `policy` and unchanged `integration.json` schema 2. For a version 1 hook manifest, change the version and add `policy`, preserving all other existing fields; no legacy schema 1 path remains. Follow the exact field tables and limits in `CONTRIBUTING.md`, including declared registry bounds and supported fee modes. Reject missing, extra or duplicate fields and wrong types; do not introduce a companion manifest, registry, payment path or authored schema file.
 9. Update `review.md` with the formula, units, rounding, boundary vectors, potential reverts, dependencies, authority, risks, input rationale, and fresh verification evidence. Separate measured results from proposed terms and pending approval.
+
+Author `hook.json.policy` as the sole checked-in policy declaration, consistent with the
+Solidity implementation and `review.md`:
+
+- Include exactly `summary`, `formula`, `parameters`, `oracle`, `behavior` and `risks`.
+  Summary and formula are nonempty strings; formula is explanatory text describing units
+  and rounding, never executable code or a consumer-evaluated expression.
+- `parameters` contains exactly `hookFeePips`, `minimumHookFeePips` and
+  `feeSensitivityPipsSecondsPerTick`. Each is exactly an object with a nonempty string
+  `description` and boolean `usedByRate`. Static policies declare `true` for the maximum
+  and `false` for the other two; dynamic policies declare their own rate usage without a
+  universal reference formula. Unused-by-rate inputs are still accepted, validated and frozen.
+- `oracle` contains exactly boolean `required` and nonempty string `description`.
+  `required` describes runtime policy/history dependence, not whether launch may omit base
+  oracle factory/config validation; `false` does not remove the constructor wire fields.
+- `behavior` contains exactly `warmup`, `flatOrFalling`, `idle`, `zeroSensitivity` and
+  `zeroMaximum`, each a nonempty explanatory string. Describe unused/not-applicable behavior
+  meaningfully rather than leaving it empty. `risks` is a nonempty array of nonempty strings.
+
+Reports expose this declaration once at `sourceIdentity.policy`, bound by the existing
+manifest/source file hashes. `configurationDescription.settingsSchema` uses its three
+parameter descriptions and `usedByRate` annotations while retaining the existing numeric
+rules and explicit `lte` cross-field constraint. Apply both schema and constraints.
+The report does not duplicate the full policy in `configurationDescription`.
+Declarations and file identity are not runtime proof, an audit, qualification or admission.
+Do not report fresh qualification from a metadata-only change; disclose actual exercised
+evidence and any provenance freshness work separately. CI remains paused.
 
 Include `<hook.json contract>SmokeTest` in `test/Smoke.t.sol`, inheriting `HookSmokeTest` with the actual source/contract descriptor in its constructor. Reuse `HookLaunchFixture` configuration, prerequisite and hookData seams; do not substitute deployment or `vm.etch` candidate code. Inherited nonvirtual `testSmoke*` tests are mandatory and unskippable. Policy refusals must be actual asserted rejections with unchanged wallets/liabilities, and each declared fee mode still needs successful trade evidence. Put custom formula, boundary, oracle and signed-data/replay checks in separate policy `test/*.t.sol` suites, such as `Policy.t.sol` and `Rate.t.sol`; they supplement, not replace, shared invariants. Mutable setup remains a reviewed assumption, not a safety proof. See `CONTRIBUTING.md` for the API and layout contract.
 

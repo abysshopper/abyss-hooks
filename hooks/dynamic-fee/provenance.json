@@ -1,7 +1,7 @@
 {
   "schema": "abyss-hooks.local-provenance.v1",
   "hook": "dynamic-fee",
-  "sourceCommit": "68a980c2341360190a109cd9b518f9393320e03a",
+  "sourceCommit": "af8f0501d61eb09e91cae42322c367ff81c21583",
   "identity": "File hashes identify executed working-tree inputs; a commit label alone does not.",
   "sourceSha256": {
     "contracts/config/robinhood.json": "675d7b813c5b1cdda406910b9afe3dd818ab9d1046e648e315656e6db2293352",
@@ -160,14 +160,14 @@
     "contracts/test/fixtures/RestrictedSignedQuoteSmoke.t.sol": "e2a0327975c1efc06a7b941fa6b35b0a903e24d78918963b2ceaa00e2f99fa09",
     "foundry.toml": "c7434eec09a87e88671c8c8d220b9e087c88229eb2a67f33774ddde333478c70",
     "hooks/dynamic-fee/DynamicFeeHook.sol": "c19a37585db2fe98b43a6bb75274194d311e6aef880888b5b25f8d503f9c9772",
-    "hooks/dynamic-fee/hook.json": "cfa55357dca920fba5b8a49d0532846b8483300640e613ccdfbf2a1e65af5aa0",
+    "hooks/dynamic-fee/hook.json": "a425ac88134ceeea6e9242b5efeb2c7688db4adca7029cd28bec9fc67915e769",
     "hooks/dynamic-fee/integration.json": "8486a62bcfa6080d5cb6425ff84f178581bea8a4ebcbb44883f6cd3d6e9e610f",
-    "hooks/dynamic-fee/review.md": "154711cb1d0524e33471502b6e7598db2fef4c2952ee0380e775f082e44d2a76",
+    "hooks/dynamic-fee/review.md": "1c8c379f48404b1a14f7c849f3b9fd1367d0bf70e55d28dab492417bed0e2014",
     "hooks/dynamic-fee/test/Policy.t.sol": "cdac706c38a1bb1517874a9c94a58cb4da77cfa2aa1efe3cafca4a274a30acc7",
     "hooks/dynamic-fee/test/Rate.t.sol": "e184980d91355eb0a8a7700e52684be2d169c04494061fcaa58f8fa6d472e46a",
     "hooks/dynamic-fee/test/Smoke.t.sol": "1ba7c95553b15048bad7fbd0f1a496dd6f622ed2e4b90f743a21de000fab0149",
     "scripts/artifact_checks.py": "39db95d0b84eb136d06db2f91b81e9d0219efc61ef9a7ffe2f7a95c2a555f72d",
-    "scripts/check_hooks.py": "3a6825467dea77f50fcb87e9504c498e52a8c9660a1d78141e5ab170b715d01d",
+    "scripts/check_hooks.py": "4bdc228a6b14370e3b2edfbb1d432269f67de20b99f3345b80abe48729e279ff",
     "scripts/install-deps.sh": "5a9b31d265afb2127001b589466ff8603e3871aada7a1394f99ee64ddb774a4c",
     "scripts/local_tests.py": "da90b59030efc10e9352794208fc69cd9e14be7f24d45efdc876639806267589",
     "scripts/protocol-source-pins.json": "1d59701b1ca2e801cdc6bae1b6f1220de6a3de721eec63cac10456e55730d22e",
@@ -194,9 +194,9 @@
   },
   "fork": {
     "chainId": 4663,
-    "block": 85874315,
-    "timestamp": 1791725997,
-    "blockHash": "0x807427b03d586660c4280077b53869227d81201f833de89c6365abd29c415843",
+    "block": 86082250,
+    "timestamp": 1791747314,
+    "blockHash": "0x41ed676806c2135afce62d158baed0aaa5ecae2d4f21a5c64514f1aabef05db1",
     "rpcOrigin": "https://robinhood.drpc.org",
     "addresses": {
       "registry": "0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee",
@@ -797,5 +797,5 @@
   "limitations": "Locally generated observations, not a signed attestation, independent audit or author-control proof.",
   "productionAdmission": false,
   "ci": "not run: explicitly paused",
-  "recordSha256": "9c95aac08c3616c6c0d38adc725fdc0a7e4d6e5550671a52b79fef79f520b9e7"
+  "recordSha256": "d0aeaca76e4fbc89f5aee6ec023cef361c3e4d51efd07cceee1467d760260802"
 }

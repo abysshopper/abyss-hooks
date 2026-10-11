@@ -28,11 +28,13 @@ results = local_module("qualification_results")
 smoke_checks = local_module("smoke_checks")
 local_tests = local_module("local_tests")
 ROOT = Path(__file__).resolve().parents[1]
-FIELDS = {"schemaVersion", "name", "topology", "source", "contract", "license"}
+FIELDS = {"schemaVersion", "name", "topology", "source", "contract", "license", "policy"}
 SLUG = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 INTEGRATION_FIELDS = {"schemaVersion", "kind", "authorId", "developerFeeBps", "swapFeeModel", "terms", "bounds"}
 SWAP_FEE_MODELS = {"static": 0, "dynamic": 1}
+POLICY_PARAMETERS = ("hookFeePips", "minimumHookFeePips", "feeSensitivityPipsSecondsPerTick")
+POLICY_BEHAVIOR = ("warmup", "flatOrFalling", "idle", "zeroSensitivity", "zeroMaximum")
 FORK_MANIFEST = ROOT / "contracts/config/robinhood.json"
 SMOKE_BASE = "contracts/test/HookSmokeTest.sol"
 SMOKE_FILE = "Smoke.t.sol"
@@ -74,7 +76,47 @@ def integration_inputs(folder):
     return data
 
 
-def configuration_description(declared):
+def policy_inputs(policy, fee_model):
+    """Validate declared documentation shape, not the truth of a submitted policy."""
+    require(isinstance(policy, dict) and set(policy) ==
+            {"summary", "formula", "parameters", "oracle", "behavior", "risks"},
+            "Exact policy fields required")
+    for field in ("summary", "formula"):
+        require(isinstance(policy[field], str) and policy[field].strip(),
+                f"Nonempty policy.{field} required")
+    parameters = policy["parameters"]
+    require(isinstance(parameters, dict) and set(parameters) == set(POLICY_PARAMETERS),
+            "Exact policy.parameters fields required")
+    for name in POLICY_PARAMETERS:
+        parameter = parameters[name]
+        require(isinstance(parameter, dict) and set(parameter) == {"description", "usedByRate"},
+                f"Exact policy.parameters.{name} fields required")
+        require(isinstance(parameter["description"], str) and parameter["description"].strip(),
+                f"Nonempty policy.parameters.{name}.description required")
+        require(type(parameter["usedByRate"]) is bool,
+                f"policy.parameters.{name}.usedByRate must be a boolean")
+        if fee_model == "static":
+            require(parameter["usedByRate"] == (name == "hookFeePips"),
+                    f"Static policy.parameters.{name}.usedByRate contradicts base rate calculation")
+    oracle = policy["oracle"]
+    require(isinstance(oracle, dict) and set(oracle) == {"required", "description"},
+            "Exact policy.oracle fields required")
+    require(type(oracle["required"]) is bool, "policy.oracle.required must be a boolean")
+    require(isinstance(oracle["description"], str) and oracle["description"].strip(),
+            "Nonempty policy.oracle.description required")
+    behavior = policy["behavior"]
+    require(isinstance(behavior, dict) and set(behavior) == set(POLICY_BEHAVIOR),
+            "Exact policy.behavior fields required")
+    for name in POLICY_BEHAVIOR:
+        require(isinstance(behavior[name], str) and behavior[name].strip(),
+                f"Nonempty policy.behavior.{name} required")
+    risks = policy["risks"]
+    require(isinstance(risks, list) and risks and
+            all(isinstance(risk, str) and risk.strip() for risk in risks),
+            "policy.risks must be a nonempty array of nonempty strings")
+
+
+def configuration_description(declared, policy):
     """Describe base launch controls, not a hook-specific policy or a complete ABI encoder."""
     bounds = declared["bounds"]
     dynamic = declared["swapFeeModel"] == "dynamic"
@@ -94,20 +136,20 @@ def configuration_description(declared):
             "type": "integer", "solidityType": "uint24", "unit": "fee-pips",
             "minimum": 0, "maximum": 1_000_000,
             "title": "Maximum trading fee" if dynamic else "Trading fee",
-            "description": ("Upper bound for the dynamic policy." if dynamic
-                            else "Static rate charged through hook deltas."),
+            "description": policy["parameters"]["hookFeePips"]["description"],
+            "usedByRate": policy["parameters"]["hookFeePips"]["usedByRate"],
         },
         "minimumHookFeePips": {
             "type": "integer", "solidityType": "uint24", "unit": "fee-pips",
             "minimum": 0, "maximum": 1_000_000, "title": "Minimum trading fee",
-            "description": ("Lower bound for the dynamic policy." if dynamic
-                            else "Constructor bound; static swaps still charge hookFeePips."),
+            "description": policy["parameters"]["minimumHookFeePips"]["description"],
+            "usedByRate": policy["parameters"]["minimumHookFeePips"]["usedByRate"],
         },
         "feeSensitivityPipsSecondsPerTick": {
             "type": "integer", "solidityType": "uint32", "unit": "fee-pips-seconds-per-tick",
             "minimum": 0, "maximum": (1 << 32) - 1, "title": "Fee sensitivity",
-            "description": ("Policy context input; consult review.md for whether and how it is used."
-                            if dynamic else "Frozen constructor input; unused by static rate calculation."),
+            "description": policy["parameters"]["feeSensitivityPipsSecondsPerTick"]["description"],
+            "usedByRate": policy["parameters"]["feeSensitivityPipsSecondsPerTick"]["usedByRate"],
         },
         "feeMode": {
             "type": "integer", "solidityType": "uint8", "unit": "enum",
@@ -136,6 +178,7 @@ def configuration_description(declared):
         "unitDenominators": {"fee-pips": 1_000_000, "basis-points": 10_000},
         "frozenBefore": "create2-salt-mining",
         "sources": [
+            "hook.json",
             "integration.json",
             "contracts/src/launch/lifecycle/v2/V4MarketConfigV6.sol",
             "contracts/src/hooks/v4/authoring/PoolBoundLaunchHookBaseV2.sol",
@@ -153,7 +196,7 @@ def write_review_reports(rows, output):
         report = {
             "schemaVersion": 1, "name": row["name"], "upstream": json.loads((ROOT / "scripts/upstream.json").read_text()),
             "declared": declared,
-            "configurationDescription": configuration_description(declared),
+            "configurationDescription": configuration_description(declared, row["policy"]),
             "sourceIdentity": row,
             "sourceFileSha256": pins,
             "sourceManifestSha256": manifest_hash,
@@ -189,7 +232,7 @@ def write_review_reports(rows, output):
                       f"- Swap fee model: `{data['swapFeeModel']}`; derived registry maximumDeveloperFeeBps: `{data['developerFeeBps']}`",
                       "- The author rate allocates owner fees after bounty through the existing V3 hub; creator LP and hook swap fees are separate settings.",
                       f"- Bounds: `{json.dumps(data['bounds'], sort_keys=True)}`",
-                      "- Machine-readable base controls: `configurationDescription` in the JSON report; declared bounds are not policy approval.",
+                      "- Machine-readable controls: `configurationDescription`; checked-in policy: `sourceIdentity.policy`. Both are descriptions, not policy approval.",
                       f"- Exact terms, file pins and pending inputs: `{report['name']}.registration-inputs.json`", ""])
     (output / "PR-REVIEW.md").write_text("\n".join(lines) + "\n")
 
@@ -204,7 +247,7 @@ def submissions(root):
         require(manifest.is_file(), f"Missing hook.json: {folder}")
         row = json.loads(manifest.read_text(), object_pairs_hook=unique_object)
         require(isinstance(row, dict) and set(row) == FIELDS, f"Exact manifest fields required: {folder}")
-        require(type(row["schemaVersion"]) is int and row["schemaVersion"] == 1, "Unsupported schemaVersion")
+        require(type(row["schemaVersion"]) is int and row["schemaVersion"] == 2, "Unsupported schemaVersion")
         require(row["name"] == folder.name, "Manifest name must equal directory slug")
         require(row["topology"] == "PoolBoundV4", "Unsupported topology; only PoolBoundV4 is qualified")
         require(isinstance(row["contract"], str) and IDENTIFIER.fullmatch(row["contract"]), "Invalid concrete contract name")
@@ -217,7 +260,8 @@ def submissions(root):
         for path in files:
             if path.suffix == ".sol":
                 require(f"// SPDX-License-Identifier: {row['license']}" in path.read_text().splitlines(), f"SPDX declaration mismatch: {path}")
-        integration_inputs(folder)
+        declared = integration_inputs(folder)
+        policy_inputs(row["policy"], declared["swapFeeModel"])
         rows.append((folder, row))
     require(rows, "Empty hook catalogue cannot pass qualification")
     return rows

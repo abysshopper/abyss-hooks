@@ -1,7 +1,7 @@
 {
   "schema": "abyss-hooks.local-provenance.v1",
   "hook": "reference-bound",
-  "sourceCommit": "68a980c2341360190a109cd9b518f9393320e03a",
+  "sourceCommit": "af8f0501d61eb09e91cae42322c367ff81c21583",
   "identity": "File hashes identify executed working-tree inputs; a commit label alone does not.",
   "sourceSha256": {
     "contracts/config/robinhood.json": "675d7b813c5b1cdda406910b9afe3dd818ab9d1046e648e315656e6db2293352",
@@ -160,13 +160,13 @@
     "contracts/test/fixtures/RestrictedSignedQuoteSmoke.t.sol": "e2a0327975c1efc06a7b941fa6b35b0a903e24d78918963b2ceaa00e2f99fa09",
     "foundry.toml": "c7434eec09a87e88671c8c8d220b9e087c88229eb2a67f33774ddde333478c70",
     "hooks/reference-bound/ReferenceBoundHook.sol": "c91b0da71079037dbdf6f2ed42fdd41653660cb2d937a3858db195dc4b7a1d2f",
-    "hooks/reference-bound/hook.json": "0952acae6dcfaf0f4d0b625747525729cf91ab0cdbdcc343833062b7d9c98251",
+    "hooks/reference-bound/hook.json": "098fe1882d3f8b2bec8101a7bffed7b1315c9bc856aa0945894b47be3f773c8e",
     "hooks/reference-bound/integration.json": "a628ca3e824979e7fdddaf090f8d0b7f2752c2cf86e0abdefc53a34f1779dc40",
-    "hooks/reference-bound/review.md": "cabc16642a4f7209a7c757d14ccbf118f582a4370f3e50f05a8ef0252da049a0",
+    "hooks/reference-bound/review.md": "71d9f3a9ab68bb80642d77219bca5a2b7549290855ce025714a91c90e75cf5e1",
     "hooks/reference-bound/test/Policy.t.sol": "e418273137839cda0f68f725e6f1bfa7702a4e6f8ebbd31f0545b0e3640ada49",
     "hooks/reference-bound/test/Smoke.t.sol": "18d42cc7f5883ffb905168152bfc6db5a6bc33583148d168185cdcb1ef098d3a",
     "scripts/artifact_checks.py": "39db95d0b84eb136d06db2f91b81e9d0219efc61ef9a7ffe2f7a95c2a555f72d",
-    "scripts/check_hooks.py": "3a6825467dea77f50fcb87e9504c498e52a8c9660a1d78141e5ab170b715d01d",
+    "scripts/check_hooks.py": "4bdc228a6b14370e3b2edfbb1d432269f67de20b99f3345b80abe48729e279ff",
     "scripts/install-deps.sh": "5a9b31d265afb2127001b589466ff8603e3871aada7a1394f99ee64ddb774a4c",
     "scripts/local_tests.py": "da90b59030efc10e9352794208fc69cd9e14be7f24d45efdc876639806267589",
     "scripts/protocol-source-pins.json": "1d59701b1ca2e801cdc6bae1b6f1220de6a3de721eec63cac10456e55730d22e",
@@ -193,9 +193,9 @@
   },
   "fork": {
     "chainId": 4663,
-    "block": 85874315,
-    "timestamp": 1791725997,
-    "blockHash": "0x807427b03d586660c4280077b53869227d81201f833de89c6365abd29c415843",
+    "block": 86082250,
+    "timestamp": 1791747314,
+    "blockHash": "0x41ed676806c2135afce62d158baed0aaa5ecae2d4f21a5c64514f1aabef05db1",
     "rpcOrigin": "https://robinhood.drpc.org",
     "addresses": {
       "registry": "0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee",
@@ -616,5 +616,5 @@
   "limitations": "Locally generated observations, not a signed attestation, independent audit or author-control proof.",
   "productionAdmission": false,
   "ci": "not run: explicitly paused",
-  "recordSha256": "e6b95e5fa33d69bc5ad90bba4fa60ecc35772dfe918ea0e7f10217b0c5cccabb"
+  "recordSha256": "a5671de2f49506cbc461b5fd8534e96ec3d0150592a7c10dc655576c80cf9db9"
 }

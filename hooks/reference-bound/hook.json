@@ -1,8 +1,43 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "reference-bound",
   "topology": "PoolBoundV4",
   "source": "ReferenceBoundHook.sol",
   "contract": "ReferenceBoundHook",
-  "license": "MIT"
+  "license": "MIT",
+  "policy": {
+    "summary": "Static creator-selected trading fee charged through hook deltas, with zero native LP swap fee.",
+    "formula": "ratePips = hookFeePips; feeRaw = floor(feeBearingAmountRaw * ratePips / 1000000). The fee-bearing amount is the specified request or executed unspecified amount according to direction, amount mode and fee currency mode.",
+    "parameters": {
+      "hookFeePips": {
+        "description": "The creator-selected constant trading rate in fee pips; 1000000 pips represents 100% of the fee-bearing amount.",
+        "usedByRate": true
+      },
+      "minimumHookFeePips": {
+        "description": "Frozen constructor lower bound that must not exceed hookFeePips; it does not change the static trading rate.",
+        "usedByRate": false
+      },
+      "feeSensitivityPipsSecondsPerTick": {
+        "description": "Frozen uint32 constructor input, including zero; unused by this static policy.",
+        "usedByRate": false
+      }
+    },
+    "oracle": {
+      "required": false,
+      "description": "No oracle history is maintained or read for fee calculation. The base still validates the configured oracle factory and registration configuration."
+    },
+    "behavior": {
+      "warmup": "No oracle warm-up; the configured static rate applies once the inherited lifecycle permits trading.",
+      "flatOrFalling": "Price movement does not change the rate.",
+      "idle": "Elapsed time does not change the rate.",
+      "zeroSensitivity": "No effect; sensitivity is not used by the static rate calculation.",
+      "zeroMaximum": "hookFeePips zero requires minimumHookFeePips zero and produces zero trading fees."
+    },
+    "risks": [
+      "External LPs receive no native swap-fee allocation from this zero-LP-fee policy; pool donations are a separate mechanism, not an automatic share of hook fees.",
+      "Positive rates can round to zero fees on sufficiently small raw amounts.",
+      "A nonzero PoolManager protocol fee makes the inherited hook reject swaps.",
+      "Complete inherited runtime and dependency review, author authorization and registry admission remain separate from these declarations."
+    ]
+  }
 }

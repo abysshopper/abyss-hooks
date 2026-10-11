@@ -21,7 +21,28 @@ class SubmissionBoundaries(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.folder = self.root / "sample"
         self.folder.mkdir()
-        self.row = dict(schemaVersion=1, name="sample", topology="PoolBoundV4", source="Sample.sol", contract="Sample", license="MIT")
+        self.row = dict(
+            schemaVersion=2, name="sample", topology="PoolBoundV4", source="Sample.sol", contract="Sample", license="MIT",
+            policy=dict(
+                summary="Charges a constant hook fee on every swap.",
+                formula="The rate equals hookFeePips, independently of tick history.",
+                parameters=dict(
+                    hookFeePips=dict(description="The static fee rate in pips.", usedByRate=True),
+                    minimumHookFeePips=dict(description="A constructor bound, not an input to the static rate.", usedByRate=False),
+                    feeSensitivityPipsSecondsPerTick=dict(
+                        description="A constructor setting unused by the static rate.", usedByRate=False),
+                ),
+                oracle=dict(required=False, description="Rate calculation does not use history; base oracle configuration is still validated."),
+                behavior=dict(
+                    warmup="The static rate applies before oracle history is available.",
+                    flatOrFalling="The static rate does not change with tick direction.",
+                    idle="Elapsed time does not change the static rate.",
+                    zeroSensitivity="Zero sensitivity does not change the static rate.",
+                    zeroMaximum="A zero hookFeePips setting yields a zero rate.",
+                ),
+                risks=["The declared fee can exceed a trader's acceptable cost."],
+            ),
+        )
         self.save()
         (self.folder / "Sample.sol").write_text("// SPDX-License-Identifier: MIT\ncontract Sample {}\n")
         (self.folder / "review.md").write_text("Risks disclosed by contributor.\n")
@@ -41,6 +62,106 @@ class SubmissionBoundaries(unittest.TestCase):
     def save(self):
         (self.folder / "hook.json").write_text(json.dumps(self.row))
 
+    def assert_policy_rejected(self):
+        self.save()
+        with self.assertRaisesRegex(ValueError, "policy"):
+            checks.submissions(self.root)
+
+    def test_invalid_or_old_hook_schema_rejected(self):
+        for version in (-1, 0, 1, 3, True, False, "2", 2.0, None, [], {}):
+            with self.subTest(version=version):
+                self.row["schemaVersion"] = version
+                self.save()
+                with self.assertRaisesRegex(ValueError, "schemaVersion"):
+                    checks.submissions(self.root)
+
+    def test_missing_policy_rejected(self):
+        del self.row["policy"]
+        self.save()
+        with self.assertRaises(ValueError):
+            checks.submissions(self.root)
+
+    def test_policy_objects_require_exact_fields(self):
+        policy = self.row["policy"]
+        objects = [
+            ("policy", policy), ("parameters", policy["parameters"]),
+            ("oracle", policy["oracle"]), ("behavior", policy["behavior"]),
+            *policy["parameters"].items(),
+        ]
+        for name, obj in objects:
+            for field in tuple(obj):
+                with self.subTest(object=name, missing=field):
+                    original = obj.pop(field)
+                    self.assert_policy_rejected()
+                    obj[field] = original
+            with self.subTest(object=name, extra="unexpected"):
+                obj["unexpected"] = "Undeclared field"
+                self.assert_policy_rejected()
+                del obj["unexpected"]
+
+    def test_policy_and_nested_objects_reject_wrong_types(self):
+        policy = self.row["policy"]
+        targets = [
+            ("policy", self.row, "policy"),
+            *((field, policy, field) for field in ("parameters", "oracle", "behavior")),
+            *((field, policy["parameters"], field) for field in policy["parameters"]),
+        ]
+        for name, parent, field in targets:
+            original = parent[field]
+            for value in (None, False, 0, "metadata", [], ["metadata"]):
+                with self.subTest(object=name, value=value):
+                    parent[field] = value
+                    self.assert_policy_rejected()
+            parent[field] = original
+
+    def test_policy_text_requires_nonempty_strings(self):
+        policy = self.row["policy"]
+        targets = [
+            ("summary", policy, "summary"), ("formula", policy, "formula"),
+            ("oracle.description", policy["oracle"], "description"),
+            *((f"{name}.description", parameter, "description")
+              for name, parameter in policy["parameters"].items()),
+            *((f"behavior.{field}", policy["behavior"], field) for field in policy["behavior"]),
+        ]
+        for name, parent, field in targets:
+            original = parent[field]
+            for value in (None, False, 0, [], {}, "", " \n "):
+                with self.subTest(field=name, value=value):
+                    parent[field] = value
+                    self.assert_policy_rejected()
+            parent[field] = original
+
+    def test_policy_flags_require_actual_booleans(self):
+        policy = self.row["policy"]
+        targets = [
+            ("oracle.required", policy["oracle"], "required"),
+            *((f"{name}.usedByRate", parameter, "usedByRate")
+              for name, parameter in policy["parameters"].items()),
+        ]
+        for name, parent, field in targets:
+            original = parent[field]
+            for value in (None, 0, 1, 0.0, 1.0, "true", "false", [], {}):
+                with self.subTest(field=name, value=value):
+                    parent[field] = value
+                    self.assert_policy_rejected()
+            parent[field] = original
+
+    def test_policy_risks_require_nonempty_array_of_nonempty_strings(self):
+        for value in (None, False, 0, "A risk", {}, [], [""], [" \n "], [None], [True],
+                      [0], [[]], [{}], ["A valid risk", ""], ["A valid risk", 0]):
+            with self.subTest(risks=value):
+                self.row["policy"]["risks"] = value
+                self.assert_policy_rejected()
+
+    def test_static_policy_usage_contradictions_rejected(self):
+        parameters = self.row["policy"]["parameters"]
+        for name, parameter in parameters.items():
+            with self.subTest(parameter=name):
+                original = parameter["usedByRate"]
+                parameter["usedByRate"] = not original
+                self.assert_policy_rejected()
+                parameter["usedByRate"] = original
+
     def test_escape_source_rejected(self):
         self.row["source"] = "../../Sample.sol"
         self.save()
@@ -56,9 +177,27 @@ class SubmissionBoundaries(unittest.TestCase):
 
     def test_duplicate_fields_rejected(self):
         manifest = self.folder / "hook.json"
-        manifest.write_text(manifest.read_text().replace('"schemaVersion": 1', '"schemaVersion": 1, "schemaVersion": 2'))
+        manifest.write_text(manifest.read_text().replace('"schemaVersion": 2', '"schemaVersion": 2, "schemaVersion": 2'))
         with self.assertRaisesRegex(ValueError, "Duplicate JSON"):
             checks.submissions(self.root)
+
+    def test_duplicate_nested_policy_fields_rejected(self):
+        policy = self.row["policy"]
+        fields = [
+            ("summary", policy["summary"]),
+            ("hookFeePips", policy["parameters"]["hookFeePips"]),
+            ("description", policy["parameters"]["hookFeePips"]["description"]),
+            ("required", policy["oracle"]["required"]),
+            ("warmup", policy["behavior"]["warmup"]),
+        ]
+        raw = json.dumps(self.row)
+        for field, value in fields:
+            with self.subTest(field=field):
+                member = f"{json.dumps(field)}: {json.dumps(value)}"
+                self.assertEqual(raw.count(member), 1)
+                (self.folder / "hook.json").write_text(raw.replace(member, f"{member}, {member}", 1))
+                with self.assertRaisesRegex(ValueError, "Duplicate JSON"):
+                    checks.submissions(self.root)
 
     def test_unknown_topology_rejected(self):
         self.row["topology"] = "ArbitraryV4"

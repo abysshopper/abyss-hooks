@@ -1,8 +1,45 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "dynamic-fee",
   "topology": "PoolBoundV4",
   "source": "DynamicFeeHook.sol",
   "contract": "DynamicFeeHook",
-  "license": "MIT"
+  "license": "MIT",
+  "policy": {
+    "summary": "A bounded dynamic hook-delta fee rises with positive observed quote-per-base tick velocity and decays toward the creator's minimum as the signal ages.",
+    "formula": "For minimum m, maximum M, sensitivity G, positive observed tick change D and elapsed signal age E: ratePips = min(M, m + floor(G * D / E)). Warm-up, D <= 0, E == 0 or G == 0 uses m; equal bounds use their common rate. feeRaw = floor(feeBearingAmountRaw * ratePips / 1000000).",
+    "parameters": {
+      "hookFeePips": {
+        "description": "Maximum trading rate M in fee pips; the upward-velocity uplift saturates at this cap.",
+        "usedByRate": true
+      },
+      "minimumHookFeePips": {
+        "description": "Minimum trading rate m in fee pips, independent of the maximum; used during warm-up, flat or falling signals and after idle decay reaches the floor.",
+        "usedByRate": true
+      },
+      "feeSensitivityPipsSecondsPerTick": {
+        "description": "Sensitivity G in fee-pips times seconds per tick. Larger values amplify positive observed velocity; zero disables the uplift and fixes the rate at the minimum.",
+        "usedByRate": true
+      }
+    },
+    "oracle": {
+      "required": true,
+      "description": "Composes PoolBoundTruncatedOracleV2 with initial capacity two. Fewer than two genuine observations or a zero-length interval yields no velocity signal. D is current truncated tick minus the previously held tick, normalized to quote per base; E is time since the previous observation, including idle age. The pre-swap rate freezes before the swap's oracle checkpoint."
+    },
+    "behavior": {
+      "warmup": "Charges the creator's minimum until two genuine observations and a positive elapsed interval are available.",
+      "flatOrFalling": "A nonpositive observed truncated tick change charges the minimum. A flat raw spot price can still leave a positive lagging truncated signal.",
+      "idle": "For an unchanged positive sampled signal, increasing elapsed age reduces uplift with integer cap/floor plateaus. New observations and clamp catch-up can prevent monotonic decay across consecutive trades.",
+      "zeroSensitivity": "Charges the minimum independently of the observed movement.",
+      "zeroMaximum": "Maximum zero requires minimum zero and produces zero trading fees."
+    },
+    "risks": [
+      "Truncated sampling, per-block clamping and pre-swap rate freezing introduce lag; oracle history is not a manipulation-resistance guarantee.",
+      "Thin liquidity, adversarial price paths and repeated trading can affect the sampled signal; the oracle is not an external fair-value feed.",
+      "High sensitivity can reach the cap quickly, and positive rates can still round to zero fees on small raw amounts.",
+      "External LPs receive no native swap-fee allocation from this zero-LP-fee policy; donations or a separately approved rewards allocation would be distinct mechanisms.",
+      "A nonzero PoolManager protocol fee makes the inherited hook reject swaps; previews are not guaranteed future execution quotes.",
+      "These declared descriptions are not artifact qualification, author consent, an audit or production registry admission."
+    ]
+  }
 }

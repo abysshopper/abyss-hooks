@@ -1,7 +1,8 @@
 ## Submission
 
 - Hook folder / contract / topology:
-- `integration.json`:
+- `hook.json` schema 2 policy declaration (summary, explanatory formula text, parameter usage, runtime oracle dependency, boundary behavior and risks):
+- Unchanged `integration.json` schema 2:
 - Formula and rounding:
 - Changes from the reference, dependencies and added authority:
 - Boundary cases and liveness risks:
@@ -20,8 +21,9 @@ For tooling changes: describe the reason and catalogue-wide impact instead.
 
 ## Contributor checklist
 
-- [ ] Complete Solidity sources, `hook.json`, `integration.json`, `review.md` and mandatory `test/Smoke.t.sol` included; policy tests included for policy-specific claims.
+- [ ] Complete Solidity sources, `hook.json` schema 2 with required hook-specific `policy`, unchanged `integration.json` schema 2, `review.md` and mandatory `test/Smoke.t.sol` included; policy tests included for policy-specific claims.
 - [ ] New hook uses `kind: submission` with a stable authorId, exact `developerFeeBps`, `swapFeeModel`, terms and five registry bounds.
+- [ ] Policy has the exact fields/types in CONTRIBUTING.md; parameter descriptions and `usedByRate` flags match the source, static usage is maximum-only, and `oracle.required` describes runtime history dependence without waiving factory/config validation.
 - [ ] Typed constructor, zero pool LP fee, hook fee bounds, authentication, custody, treasury and oracle behavior preserved.
 - [ ] Source rights and dependency licenses checked.
 - [ ] Selected-hook mandatory smoke and separate policy checks passed, or missing/failed checks disclosed. No skipped or incomplete coverage represented as qualification.
@@ -33,7 +35,7 @@ Record the decision in a review/comment against the current PR commit:
 
 - [ ] Inspect local `RESULTS.md`, separate smoke/policy results, receipts, input report, measured artifact hashes and compact provenance during the CI pause; require exact-head Actions evidence when CI is re-enabled.
 - [ ] Check provenance source/test/harness/tool freshness without calling it a current-chain rerun; review mutable setup, prerequisites, genuine signed hookData and artifact selection.
-- [ ] Review formula, boundaries, complete source/dependency graph and authority.
+- [ ] Review checked-in policy against formula, boundaries, complete source/dependency graph and authority. Treat `sourceIdentity.policy` and `configurationDescription` parameter annotations as declarations, not runtime proof, an audit or metadata-only qualification; never execute formula text.
 - [ ] Review proposed identity, required payment rate, fee model, terms and bounds; identify unproven claims.
 - [ ] Review tooling/pin changes independently.
 

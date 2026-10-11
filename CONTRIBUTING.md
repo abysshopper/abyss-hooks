@@ -8,8 +8,8 @@ Each folder must contain:
 
 | File | Contents |
 | --- | --- |
-| `hook.json` | `schemaVersion: 1`, matching `name`, `topology`, `source`, `contract`, SPDX `license` |
-| `integration.json` | Proposed registry inputs listed below |
+| `hook.json` | `schemaVersion: 2`, matching `name`, `topology`, `source`, `contract`, SPDX `license`, and required hook-specific `policy` declaration |
+| `integration.json` | Unchanged `schemaVersion: 2`, with proposed registry inputs listed below |
 | `review.md` | Formula and rounding; boundary inputs/outputs; changes, dependencies, authority and risks; input rationale and verification evidence |
 | `*.sol` | Complete sources with matching SPDX headers |
 | `test/Smoke.t.sol` | Mandatory concrete `<contract>SmokeTest` inheriting `HookSmokeTest`, pointed at this hook's artifact |
@@ -19,6 +19,47 @@ Each folder must contain:
 Production Solidity sources stay flat in `hooks/<slug>/`. The sole allowed subdirectory is `test/`, containing regular, flat Solidity files: mandatory `Smoke.t.sol`, optional policy suites and Solidity fixtures. No deeper directories, symlinks, scripts, generated artifacts or unknown file types are allowed; `provenance.json` is the explicit generated-record exception. `source` must be a local production filename. `@black-market/` maps to the shipped `contracts/src/` authoring code and interfaces; Uniswap and Solady remappings are also available.
 
 Submission pull requests may only add or change files under `hooks/<slug>/`. The shared test harness, tooling, catalogue tests, documentation and CI workflows are maintainer-owned; if a hook needs new harness capability, open an issue or a separate infrastructure pull request instead of bundling it into the submission.
+
+### Hook manifest and policy declaration
+
+`hook.json` requires exactly `schemaVersion`, `name`, `topology`, `source`, `contract`,
+`license` and `policy`. Migrate version 1 by setting the integer `schemaVersion` to `2`
+and adding `policy`; preserve all other existing fields. Version 1 is no longer accepted.
+`integration.json` remains version 2 with exactly its existing contract below. This migration
+does not introduce a registry, payment path, companion manifest or authored schema file.
+
+The required `policy` object has exactly these fields:
+
+| Field | Required type and meaning |
+| --- | --- |
+| `summary` | Nonempty string describing this hook's fee policy |
+| `formula` | Nonempty explanatory string describing the rate formula, units and rounding; text only, never executable code or an expression to evaluate |
+| `parameters` | Object containing exactly `hookFeePips`, `minimumHookFeePips` and `feeSensitivityPipsSecondsPerTick`; each value is exactly `{ "description": <nonempty string>, "usedByRate": <boolean> }` |
+| `oracle` | Exactly `{ "required": <boolean>, "description": <nonempty string> }`; describes the runtime policy/history dependency |
+| `behavior` | Object containing exactly `warmup`, `flatOrFalling`, `idle`, `zeroSensitivity` and `zeroMaximum`; each value is a nonempty string explaining this policy's behavior |
+| `risks` | Nonempty array of nonempty strings describing policy risks and limitations |
+
+Missing, extra or duplicate fields and wrong types are rejected at every object level.
+Boolean flags must be JSON booleans, not numbers or strings. Supply meaningful descriptions
+even for unused parameters or behavior that does not apply to the policy.
+
+`usedByRate` declares whether the parameter participates in this hook's rate calculation,
+not whether the constructor still accepts, validates or freezes it. A static declaration must
+set `hookFeePips.usedByRate` to `true` and the other two parameter flags to `false`, because
+the static rate is the configured maximum. Dynamic policies declare their own usage; the
+reference dynamic formula is not a universal requirement.
+
+`oracle.required` means the runtime policy depends on oracle/history data. `false` does
+not waive base or launch-factory validation of `oracleFactory` or `oracleConfigId`, remove
+those constructor fields, or imply that an oracle configuration is unnecessary for launch.
+The static reference has no runtime history dependency; the dynamic reference uses the
+optional truncated-oracle template.
+
+Keep `policy` consistent with the Solidity implementation and `review.md`. It is checked-in
+declared information, not runtime proof, an audit, qualification or admission approval.
+Formula text must never be executed by a consumer. Source review and exercised smoke/policy
+evidence remain separate requirements.
+
 
 ### Contributor smoke and policy tests
 
@@ -78,16 +119,25 @@ python3.12 scripts/check_hooks.py --structure-only --output evidence/describe-<u
 ```
 
 The description is derived from the existing `integration.json` fee model, author rate and
-registry bounds, plus the canonical V6/base constructor rules. Do not add another manifest,
-module registry, authored configuration schema or fee-payment path. Submission schemas remain
-`hook.json` version 1 and `integration.json` version 2.
+registry bounds, the canonical V6/base constructor rules, and the required `hook.json.policy`
+declaration. Submission schemas are `hook.json` version 2 and unchanged `integration.json`
+version 2. Do not add another manifest, module registry, authored configuration schema or
+fee-payment path.
+
+The same report's `sourceIdentity.policy` contains the checked-in policy declaration, bound
+by the existing manifest/source file hashes. `hook.json` is the sole authored policy source;
+the report does not repeat the full declaration in `configurationDescription`. File identity
+binds declared information to source bytes; it does not prove the implementation follows it.
 
 `settingsSchema` uses JSON Schema Draft 2020-12 for seven controls: zero `lpFeePips`,
 `tickSpacing`, maximum `hookFeePips`, `minimumHookFeePips`, uint32
 `feeSensitivityPipsSecondsPerTick`, supported `feeMode` choices, and the exact required
-`developerFeeBps`. Its titles and descriptions distinguish static rates from dynamic policy
-bounds. Dynamic sensitivity is a policy-context input, not a promise that every policy uses the
-reference formula. No creator defaults are chosen.
+`developerFeeBps`. The three fee-setting properties use their hook-specific
+`policy.parameters` descriptions and carry the declared `usedByRate` boolean annotations.
+Titles and numeric bounds still distinguish static rates from dynamic policy bounds.
+An unused-by-rate setting remains a validated constructor input, not permission to omit it.
+Dynamic sensitivity is policy-specific, not a promise that every policy uses the reference
+formula. No creator defaults are chosen. The JSON Schema and explicit `lte` rule are unchanged.
 
 Consumers must apply **both** `settingsSchema` and every `constraints` entry. The sole current
 operator, `lte`, means the value named by `left` must be less than or equal to the value named

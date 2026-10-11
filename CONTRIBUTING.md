@@ -268,6 +268,19 @@ This checks recorded source, test, harness and tool identity freshness without r
 
 Use the [PR template](.github/pull_request_template.md). Automatic GitHub CI is temporarily paused. Do not start or wait for a run during the pause; report the applicable local checks and explicitly disclose that CI did not run. After CI is re-enabled, inspect the exact-head run before acceptance.
 
+`main` keeps one approving review, code-owner review, stale-review dismissal and
+last-push approval requirements for normal contributors. Repository administrators are
+explicitly trusted to override branch protection (`enforce_admins: false`); this is a
+durable escape hatch, not a per-merge protection toggle. Squash-only merges, linear
+history, resolved conversations, disabled force pushes and disabled deletions remain
+configured for normal contributors. Administrators can bypass protection, so repository
+admin access must stay limited to trusted maintainers.
+
+For an administrator override, review the exact head and applicable local evidence,
+record the reason in the PR, and use `gh pr merge --squash --admin --match-head-commit <sha>`.
+Never manufacture another account's review or describe an override as independent
+approval, successful CI, an audit or production registry admission.
+
 Review `RESULTS.md`, smoke/policy JSON and logs, receipts, `PR-REVIEW.md` and `<slug>.registration-inputs.json` from the selected local output directory alongside any committed `provenance.json`. Reports separate declared inputs, file SHA256 identities, measured artifact evidence, derived registry fields and pending admission inputs. File hashes are not Solidity admission digests.
 
 The runner independently reconstructs each selected artifact and uses the test-configured quote and prerequisite scenario on a local fork with zero LP fees. Shared checks evaluate declared fee modes, both directions and exact-input/output branches as successful trades or asserted policy refusals, with real successful trade evidence per declared mode. They check previewed versus charged rates, wallet/delta accounting, backing and exact treasury, executor, owner and developer receipts. Lifecycle, author-rate rejection, payout routing, zero-fee/zero-credit behavior, donation exclusion and protocol-fee rejection remain shared checks. Policy-specific formulas and boundaries run separately. Test setup and declared registry bounds are assumptions to review, not exhaustive bounds or arbitrary-runtime safety proof.

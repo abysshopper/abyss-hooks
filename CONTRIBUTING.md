@@ -68,6 +68,46 @@ Keep formula, rounding, oracle-curve, boundary, malformed-data and signature/rep
 
 Missing, extra or duplicate fields and incorrect numeric types are rejected. The required author rate must fit the target registry's protocol maximum; qualification never clamps it. The reference declares 500 bps as an example, not a platform default.
 
+### Machine-readable launch controls
+
+Both structure-only and full qualification reports include `configurationDescription` in
+`<slug>.registration-inputs.json`. Generate it without a fork:
+
+```sh
+python3.12 scripts/check_hooks.py --structure-only --output evidence/describe-<unique-run>
+```
+
+The description is derived from the existing `integration.json` fee model, author rate and
+registry bounds, plus the canonical V6/base constructor rules. Do not add another manifest,
+module registry, authored configuration schema or fee-payment path. Submission schemas remain
+`hook.json` version 1 and `integration.json` version 2.
+
+`settingsSchema` uses JSON Schema Draft 2020-12 for seven controls: zero `lpFeePips`,
+`tickSpacing`, maximum `hookFeePips`, `minimumHookFeePips`, uint32
+`feeSensitivityPipsSecondsPerTick`, supported `feeMode` choices, and the exact required
+`developerFeeBps`. Its titles and descriptions distinguish static rates from dynamic policy
+bounds. Dynamic sensitivity is a policy-context input, not a promise that every policy uses the
+reference formula. No creator defaults are chosen.
+
+Consumers must apply **both** `settingsSchema` and every `constraints` entry. The sole current
+operator, `lte`, means the value named by `left` must be less than or equal to the value named
+by `right`; it enforces `minimumHookFeePips <= hookFeePips`. Standard JSON Schema alone does not
+compare these two fields. Reject unsupported operators rather than silently ignoring them.
+
+Each property includes `solidityType` and `unit` annotations; `unitDenominators` gives
+1,000,000 for fee pips and 10,000 for basis points. Keep integer units at the encoding boundary.
+For example, 3,000 fee pips is 0.3% of the fee-bearing swap amount, whereas 500 author bps is
+5% of attributed owner proceeds after bounty. They are different bases, not additive swap fees.
+`const` values are fixed, not suggested defaults.
+
+This is a partial control description, not a complete ABI encoder, admission approval, fee
+quote or proof of policy execution. Addresses, opening price, positions, oracle prerequisites,
+signed terms, salts and hook-specific restrictions still require the existing launch builder,
+source review and qualification. Freeze the complete constructor before CREATE2 salt mining.
+Never interpret zero native LP swap fees as disabling donations or as funding an LP rewards
+program. The generated metadata does not change fee allocation.
+
+
 ### Hook requirements
 
 - Derive from `PoolBoundLaunchHookBaseV2`; preserve its typed constructor. The base works without a fee-calculation override and contains no oracle history. Inherit the optional `PoolBoundTruncatedOracleV2` template when your hook needs that feature.

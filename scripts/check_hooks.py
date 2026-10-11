@@ -74,6 +74,75 @@ def integration_inputs(folder):
     return data
 
 
+def configuration_description(declared):
+    """Describe base launch controls, not a hook-specific policy or a complete ABI encoder."""
+    bounds = declared["bounds"]
+    dynamic = declared["swapFeeModel"] == "dynamic"
+    properties = {
+        "lpFeePips": {
+            "type": "integer", "solidityType": "uint24", "unit": "fee-pips", "const": 0,
+            "title": "Native LP fee",
+            "description": "Fixed to zero. Hook-delta trading fees are not native LP swap fees.",
+        },
+        "tickSpacing": {
+            "type": "integer", "solidityType": "int24", "unit": "ticks",
+            "minimum": bounds["minimumTickSpacing"], "maximum": bounds["maximumTickSpacing"],
+            "title": "Tick spacing",
+            "description": "Within the declared registry envelope; not proof of admission.",
+        },
+        "hookFeePips": {
+            "type": "integer", "solidityType": "uint24", "unit": "fee-pips",
+            "minimum": 0, "maximum": 1_000_000,
+            "title": "Maximum trading fee" if dynamic else "Trading fee",
+            "description": ("Upper bound for the dynamic policy." if dynamic
+                            else "Static rate charged through hook deltas."),
+        },
+        "minimumHookFeePips": {
+            "type": "integer", "solidityType": "uint24", "unit": "fee-pips",
+            "minimum": 0, "maximum": 1_000_000, "title": "Minimum trading fee",
+            "description": ("Lower bound for the dynamic policy." if dynamic
+                            else "Constructor bound; static swaps still charge hookFeePips."),
+        },
+        "feeSensitivityPipsSecondsPerTick": {
+            "type": "integer", "solidityType": "uint32", "unit": "fee-pips-seconds-per-tick",
+            "minimum": 0, "maximum": (1 << 32) - 1, "title": "Fee sensitivity",
+            "description": ("Policy context input; consult review.md for whether and how it is used."
+                            if dynamic else "Frozen constructor input; unused by static rate calculation."),
+        },
+        "feeMode": {
+            "type": "integer", "solidityType": "uint8", "unit": "enum",
+            "enum": [mode for mode in (0, 1) if bounds["feeModeFlags"] & (1 << mode)],
+            "title": "Fee currency mode",
+            "description": "0: InputToken; 1: QuoteOnly. Select one supported mode, not both.",
+        },
+        "developerFeeBps": {
+            "type": "integer", "solidityType": "uint16", "unit": "basis-points",
+            "const": declared["developerFeeBps"], "title": "Required author allocation",
+            "description": "Share of attributed owner proceeds after bounty, not a swap surcharge.",
+        },
+    }
+    return {
+        "scope": "Fee and tick-spacing controls only; not a complete launch configuration or policy proof.",
+        "launchConfigType": "V4MarketConfigV6",
+        "constructorType": "PoolBoundHookParametersV2",
+        "settingsSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object", "additionalProperties": False,
+            "required": list(properties), "properties": properties,
+        },
+        "constraints": [
+            {"left": "minimumHookFeePips", "operator": "lte", "right": "hookFeePips"},
+        ],
+        "unitDenominators": {"fee-pips": 1_000_000, "basis-points": 10_000},
+        "frozenBefore": "create2-salt-mining",
+        "sources": [
+            "integration.json",
+            "contracts/src/launch/lifecycle/v2/V4MarketConfigV6.sol",
+            "contracts/src/hooks/v4/authoring/PoolBoundLaunchHookBaseV2.sol",
+        ],
+    }
+
+
 def write_review_reports(rows, output):
     reports = []
     for folder, row in rows:
@@ -84,6 +153,7 @@ def write_review_reports(rows, output):
         report = {
             "schemaVersion": 1, "name": row["name"], "upstream": json.loads((ROOT / "scripts/upstream.json").read_text()),
             "declared": declared,
+            "configurationDescription": configuration_description(declared),
             "sourceIdentity": row,
             "sourceFileSha256": pins,
             "sourceManifestSha256": manifest_hash,
@@ -119,6 +189,7 @@ def write_review_reports(rows, output):
                       f"- Swap fee model: `{data['swapFeeModel']}`; derived registry maximumDeveloperFeeBps: `{data['developerFeeBps']}`",
                       "- The author rate allocates owner fees after bounty through the existing V3 hub; creator LP and hook swap fees are separate settings.",
                       f"- Bounds: `{json.dumps(data['bounds'], sort_keys=True)}`",
+                      "- Machine-readable base controls: `configurationDescription` in the JSON report; declared bounds are not policy approval.",
                       f"- Exact terms, file pins and pending inputs: `{report['name']}.registration-inputs.json`", ""])
     (output / "PR-REVIEW.md").write_text("\n".join(lines) + "\n")
 

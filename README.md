@@ -32,6 +32,8 @@ Additional [granular regressions](hooks/dynamic-fee/review.md#granular-boundarie
 
 Local qualification accepts `--rpc-url https://robinhood.drpc.org` because the default public RPC can reject fork reads with a Cloudflare challenge. Chain ID, fork block and deployed-code hash checks remain mandatory.
 
+For machine-readable launch controls, run `python3.12 scripts/check_hooks.py --structure-only --output evidence/describe-<unique-run>` and read `configurationDescription` in each hook's registration-inputs JSON. It derives typed units, limits and fixed values from existing declarations without another module system. Apply the [schema and cross-field constraint contract](CONTRIBUTING.md#machine-readable-launch-controls); the description is not a complete launch configuration or policy approval.
+
 Before attaching provenance to a GitHub PR, review the compact record and commit only that file with the selected sources, tests and review. Keep full logs local; never publish credentials, wallet keys or admission secrets. `python3.12 scripts/check_hooks.py --hook <slug> --check-provenance` checks recorded source, test, harness and tool identity without rerunning the chain or proving current-chain behavior. See [Local checks](CONTRIBUTING.md#local-checks) for setup and evidence interpretation.
 
 Automatic CI is temporarily paused. The Hooks workflow is retained for deliberate manual runs after re-enabling it; do not dispatch CI or wait for missing checks during the pause. Run applicable checks locally and disclose that GitHub CI did not run.

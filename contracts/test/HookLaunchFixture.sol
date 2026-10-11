@@ -185,6 +185,7 @@ abstract contract HookLaunchFixture is HookOracleAssertions, NativeLaunchGraphFi
         NativeLaunchGraph memory graph = _deployNativeLaunchGraph(
             manager, IAbyssLaunchFactory(_address("oracleFactory")), address(wrappedNative), oracleId, developerBps
         );
+        graph = _customizeLaunchGraph(graph);
         core = LaunchOrchestratorV1(graph.core);
         registry = LaunchImplementationRegistryV2(graph.registry);
         collectorFactory = graph.collectorFactory;
@@ -202,6 +203,16 @@ abstract contract HookLaunchFixture is HookOracleAssertions, NativeLaunchGraphFi
     }
 
     function _setUpPrerequisites() internal virtual { }
+
+    function _customizeLaunchGraph(NativeLaunchGraph memory graph)
+        internal virtual returns (NativeLaunchGraph memory)
+    {
+        return graph;
+    }
+
+    function _marketConfigSuffix(address) internal view virtual returns (bytes memory) {
+        return "";
+    }
 
     function _configureScenario() internal virtual returns (LaunchScenario memory) {
         return _defaultScenario();
@@ -486,11 +497,11 @@ abstract contract HookLaunchFixture is HookOracleAssertions, NativeLaunchGraphFi
         V4MarketConfigV6 memory selected = abi.decode(plan.markets[0].config, (V4MarketConfigV6));
         selected.minimumHookFeePips = minimum;
         selected.feeSensitivityPipsSecondsPerTick = sensitivity;
-        plan.markets[0].config = abi.encode(selected);
+        plan.markets[0].config = bytes.concat(abi.encode(selected), _marketConfigSuffix(core.predictToken(plan)));
         (PoolBoundHookParametersV2 memory parameters,) =
             adapter.collectorFactory().poolBoundHookParameters(address(adapter), core.predictToken(plan), plan.markets[0]);
         selected.hookSalt = _mine(address(deployer), deployer.initCodeHash(parameters));
-        plan.markets[0].config = abi.encode(selected);
+        plan.markets[0].config = bytes.concat(abi.encode(selected), _marketConfigSuffix(core.predictToken(plan)));
         vm.startPrank(creator);
         core.beginLaunch(plan, LaunchModeV1.Staged);
         core.prepareMarkets(plan, 0, 1);
@@ -586,11 +597,12 @@ abstract contract HookLaunchFixture is HookOracleAssertions, NativeLaunchGraphFi
         config.positions = new V4PositionConfigV1[](1);
         config.positions[0] = _position(token);
         plan.markets = new MarketConfigV1[](1);
-        plan.markets[0] = MarketConfigV1(adapterId, profileId, address(quote), plan.token.supply, 6, abi.encode(config));
+        plan.markets[0] = MarketConfigV1(adapterId, profileId, address(quote), plan.token.supply, 6,
+            bytes.concat(abi.encode(config), _marketConfigSuffix(token)));
         PoolBoundHookParametersV2 memory parameters;
         (parameters,) = adapter.collectorFactory().poolBoundHookParameters(address(adapter), token, plan.markets[0]);
         config.hookSalt = _mine(address(deployer), deployer.initCodeHash(parameters));
-        plan.markets[0].config = abi.encode(config);
+        plan.markets[0].config = bytes.concat(abi.encode(config), _marketConfigSuffix(token));
         assertEq(core.predictToken(plan), token);
         plan.funding = new AssetFundingV1[](1);
         plan.funding[0] = AssetFundingV1(address(quote), launchScenario.launchFunding, FundingKindV1.ERC20,

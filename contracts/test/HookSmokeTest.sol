@@ -66,7 +66,7 @@ abstract contract HookSmokeTest is HookLaunchFixture {
         PoolFeeCollectorFactoryV1 factory = adapter.collectorFactory();
         for (uint256 i; i < 2; ++i) {
             config.positions[0].maxTokenAmount = i == 0 ? budget - 1 : budget + 1;
-            plan.markets[0].config = abi.encode(config);
+            plan.markets[0].config = bytes.concat(abi.encode(config), _marketConfigSuffix(core.predictToken(plan)));
             address predictedToken = core.predictToken(plan);
             vm.expectRevert(bytes4(keccak256("InvalidConfiguration()")));
             factory.poolBoundHookParameters(address(adapter), predictedToken, plan.markets[0]);
@@ -81,11 +81,11 @@ abstract contract HookSmokeTest is HookLaunchFixture {
             V4MarketConfigV6 memory config = abi.decode(plan.markets[0].config, (V4MarketConfigV6));
             config.positions[0].maxTokenAmount = budget;
             plan.markets[0].tokenBudget = budget;
-            plan.markets[0].config = abi.encode(config);
+            plan.markets[0].config = bytes.concat(abi.encode(config), _marketConfigSuffix(core.predictToken(plan)));
             (PoolBoundHookParametersV2 memory parameters,) = adapter.collectorFactory()
                 .poolBoundHookParameters(address(adapter), core.predictToken(plan), plan.markets[0]);
             config.hookSalt = _mine(address(deployer), deployer.initCodeHash(parameters));
-            plan.markets[0].config = abi.encode(config);
+            plan.markets[0].config = bytes.concat(abi.encode(config), _marketConfigSuffix(core.predictToken(plan)));
             vm.prank(creator);
             vm.expectRevert(bytes4(keccak256("InvalidMarket()")));
             core.beginLaunch(plan, LaunchModeV1.Staged);
@@ -345,13 +345,18 @@ abstract contract HookSmokeTest is HookLaunchFixture {
         PoolKey memory key = hook.poolKey(hook.boundPoolId());
         vm.prank(creator);
         bytes32 launchId = core.beginLaunch(plan, LaunchModeV1.Staged).launchId;
-        address creatorContract = collectorDeployer;
-        address collector = vm.computeCreateAddress(creatorContract, vm.getNonce(creatorContract));
+        // Discover the real source without assuming how many contracts its deployer creates.
+        uint256 preparationSnapshot = vm.snapshotState();
+        vm.prank(creator);
+        core.prepareMarkets(plan, 0, 1);
+        (, PreparedMarketV1 memory prepared) = core.directory().market(launchId, 0);
+        address collector = prepared.feeSource;
+        require(vm.revertToStateAndDelete(preparationSnapshot), "restore collector discovery");
         (bytes4 selector, bytes memory response) = _collectorGetterResponse(key, scenario);
         if (scenario >= 23) vm.mockCallRevert(collector, abi.encodePacked(selector), response);
         else vm.mockCall(collector, abi.encodePacked(selector), response);
-        // mockCall installs code on empty targets. Remove that stub so the real canonical
-        // deployer still CREATEs the collector; only its selected return envelope is mocked.
+        // mockCall installs code on empty targets. Remove that stub so the real
+        // deployer still creates the collector; only its selected return envelope is mocked.
         vm.etch(collector, "");
         vm.prank(creator);
         if (scenario >= 23) vm.expectRevert(response);

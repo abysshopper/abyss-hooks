@@ -1,7 +1,7 @@
 {
   "schema": "abyss-hooks.local-provenance.v1",
   "hook": "reference-bound",
-  "sourceCommit": "04aab08c65f1aa97b93b38b22a2d53070c39318c",
+  "sourceCommit": "68a980c2341360190a109cd9b518f9393320e03a",
   "identity": "File hashes identify executed working-tree inputs; a commit label alone does not.",
   "sourceSha256": {
     "contracts/config/robinhood.json": "675d7b813c5b1cdda406910b9afe3dd818ab9d1046e648e315656e6db2293352",
@@ -146,9 +146,9 @@
     "contracts/src/launch/lifecycle/v2/ILaunchRegistryV2.sol": "0424ac04aa7b53aa6281d94d1a6ebedeb00b8da11e774379ef14f4c93d4425c6",
     "contracts/src/launch/lifecycle/v2/V4MarketConfigV6.sol": "7ff53ada13d44e0745a6c3dc38855b0c35f68d9f641f52aa55ff82255f20e760",
     "contracts/test/ForkTrader.sol": "e8750cede35c6fc1a3d121f3ef4668862d203658bc36fa5436a26f54324525e5",
-    "contracts/test/HookLaunchFixture.sol": "73febdeaf4a6975fd9d150e0f7e5d7a3185f0f9c6926b79c29aa2c4789577185",
+    "contracts/test/HookLaunchFixture.sol": "c864eee97a63aafe7688d8f3276f7a734a4ddccae95bc37c8779593d3c3ff0a2",
     "contracts/test/HookOracleAssertions.sol": "5324bf13b8da014903f14568ac27d9ca8823ad6402335471807acd9f1a49d95a",
-    "contracts/test/HookSmokeTest.sol": "39440ea49fcab890556f074f07c3e79e179e329dfa85e5e67ecd73e38e0501b7",
+    "contracts/test/HookSmokeTest.sol": "6aa5f6afe838b2d5dc7a2803a2ca74d9740353ddb8e2a8105b27adc97f32490f",
     "contracts/test/LaunchDeltaAccountingFixture.sol": "c2326dfd75466259472a9fb49c7b150c2bb5020ae869b940caf8cb63fefcf839",
     "contracts/test/NativeLaunchGraphFixture.sol": "95fd2ed5f7f5f1a27d45c341531f235169b8946610b4e8e2f9357655051a65cc",
     "contracts/test/PoolHookDeployer.t.sol": "595f5b0e1d072f3efae11f73b324e3bd5404de8a4e470ed11c14a0bac8cf3573",
@@ -193,9 +193,9 @@
   },
   "fork": {
     "chainId": 4663,
-    "block": 85367664,
-    "timestamp": 1791673234,
-    "blockHash": "0x22e7f3229ea63445bdb9899a6878bc3ddcac3e9dde0c4714eae5932c80f9525c",
+    "block": 85874315,
+    "timestamp": 1791725997,
+    "blockHash": "0x807427b03d586660c4280077b53869227d81201f833de89c6365abd29c415843",
     "rpcOrigin": "https://robinhood.drpc.org",
     "addresses": {
       "registry": "0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee",
@@ -261,127 +261,127 @@
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeConfiguredZeroHookFeeIsFree()",
       "status": "Success",
-      "gas": 21290372
+      "gas": 21353943
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeForeignPoolKeyRejectedByAuthenticatedCaller()",
       "status": "Success",
-      "gas": 18692131
+      "gas": 18752923
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeLaunchRejectsMarketBudgetsDifferentFromSupply()",
       "status": "Success",
-      "gas": 12331983
+      "gas": 12453592
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeLaunchRejectsMissingOrMalformedCustodyDescriptor()",
       "status": "Success",
-      "gas": 64782637
+      "gas": 64786831
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeLaunchRejectsNonzeroPoolLPFee()",
       "status": "Success",
-      "gas": 9692295
+      "gas": 9693358
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeLaunchRejectsPositionMaximumBudgetMismatch()",
       "status": "Success",
-      "gas": 812660
+      "gas": 873256
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeLaunchRejectsReducedAuthorPayment()",
       "status": "Success",
-      "gas": 16739628
+      "gas": 16740748
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeLaunchTradesAndExactRoyaltyClaims()",
       "status": "Success",
-      "gas": 44893256
+      "gas": 45024426
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeNoOracleHistoryBeforePoolInitialization()",
       "status": "Success",
-      "gas": 7565382
+      "gas": 7566443
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeOptionalOracleComposition()",
       "status": "Success",
-      "gas": 24316256
+      "gas": 24377849
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeRegisteredPayoutReceivesHookRoyalties()",
       "status": "Success",
-      "gas": 25322783
+      "gas": 25384260
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeRegistrationAcceptsCleanGetterWithTrailingData()",
       "status": "Success",
-      "gas": 25827342
+      "gas": 25890622
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeRegistrationAcceptsLifecycleGetterTrailingData()",
       "status": "Success",
-      "gas": 17225894
+      "gas": 17226992
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeRegistrationAcceptsStructuredGetterLayouts()",
       "status": "Success",
-      "gas": 74667832
+      "gas": 87327714
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeRegistrationBubblesGetterRevert()",
       "status": "Success",
-      "gas": 16187912
+      "gas": 16188989
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeRegistrationBubblesStructuredGetterReverts()",
       "status": "Success",
-      "gas": 32934308
+      "gas": 39263481
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeRegistrationRejectsDirtyUnusedLifecycleWords()",
       "status": "Success",
-      "gas": 73226402
+      "gas": 73233749
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeRegistrationRejectsMalformedGetterWords()",
       "status": "Success",
-      "gas": 64828939
+      "gas": 64834285
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeRegistrationRejectsMalformedStructuredGetters()",
       "status": "Success",
-      "gas": 315496765
+      "gas": 375684385
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeTradingRejectsPoolManagerProtocolFee()",
       "status": "Success",
-      "gas": 22820741
+      "gas": 22882457
     },
     {
       "suite": "hooks/reference-bound/test/Smoke.t.sol:ReferenceBoundHookSmokeTest",
       "test": "testSmokeUnauthenticatedCallbacksAndCollectionRejected()",
       "status": "Success",
-      "gas": 19505301
+      "gas": 19566333
     }
   ],
   "policy": [
@@ -389,7 +389,7 @@
       "suite": "hooks/reference-bound/test/Policy.t.sol:ReferenceBoundHookPolicyTest",
       "test": "testPolicyLaunchBurnsUnusedInventory()",
       "status": "Success",
-      "gas": 41671468
+      "gas": 41795717
     }
   ],
   "receipts": {
@@ -616,5 +616,5 @@
   "limitations": "Locally generated observations, not a signed attestation, independent audit or author-control proof.",
   "productionAdmission": false,
   "ci": "not run: explicitly paused",
-  "recordSha256": "72bcec786afa3aef8ab2877127ad56cac553af606c0f4e1318203967e3207866"
+  "recordSha256": "e6b95e5fa33d69bc5ad90bba4fa60ecc35772dfe918ea0e7f10217b0c5cccabb"
 }

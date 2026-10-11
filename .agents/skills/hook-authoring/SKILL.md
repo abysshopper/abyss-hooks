@@ -35,6 +35,8 @@ Read `SECURITY.md` before handling contributed code or evidence. Use the [hook-s
 
 Include `<hook.json contract>SmokeTest` in `test/Smoke.t.sol`, inheriting `HookSmokeTest` with the actual source/contract descriptor in its constructor. Reuse `HookLaunchFixture` configuration, prerequisite and hookData seams; do not substitute deployment or `vm.etch` candidate code. Inherited nonvirtual `testSmoke*` tests are mandatory and unskippable. Policy refusals must be actual asserted rejections with unchanged wallets/liabilities, and each declared fee mode still needs successful trade evidence. Put custom formula, boundary, oracle and signed-data/replay checks in separate policy `test/*.t.sol` suites, such as `Policy.t.sol` and `Rate.t.sol`; they supplement, not replace, shared invariants. Mutable setup remains a reviewed assumption, not a safety proof. See `CONTRIBUTING.md` for the API and layout contract.
 
+For collector-side integration dependencies, use `_customizeLaunchGraph(NativeLaunchGraph memory)` to replace the real graph's collector factory/deployer before admission, and `_marketConfigSuffix(address token) internal view` to append deterministic bytes after the canonical V6 configuration in every launch case. Defaults preserve the native graph and an empty suffix. Document actor artifacts, suffix units and graph assumptions; do not deploy companions from the hook or override candidate deployment/accounting. These test-side seams do not approve production admission.
+
 ## Preserve the lifecycle and artifact boundary
 
 The [official hook lifecycle](https://developers.uniswap.org/docs/protocols/v4/concepts/hooks) describes general V4 capabilities. This repository deliberately narrows them to one bound market:

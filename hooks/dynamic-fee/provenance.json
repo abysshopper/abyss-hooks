@@ -1,7 +1,7 @@
 {
   "schema": "abyss-hooks.local-provenance.v1",
   "hook": "dynamic-fee",
-  "sourceCommit": "04aab08c65f1aa97b93b38b22a2d53070c39318c",
+  "sourceCommit": "68a980c2341360190a109cd9b518f9393320e03a",
   "identity": "File hashes identify executed working-tree inputs; a commit label alone does not.",
   "sourceSha256": {
     "contracts/config/robinhood.json": "675d7b813c5b1cdda406910b9afe3dd818ab9d1046e648e315656e6db2293352",
@@ -146,9 +146,9 @@
     "contracts/src/launch/lifecycle/v2/ILaunchRegistryV2.sol": "0424ac04aa7b53aa6281d94d1a6ebedeb00b8da11e774379ef14f4c93d4425c6",
     "contracts/src/launch/lifecycle/v2/V4MarketConfigV6.sol": "7ff53ada13d44e0745a6c3dc38855b0c35f68d9f641f52aa55ff82255f20e760",
     "contracts/test/ForkTrader.sol": "e8750cede35c6fc1a3d121f3ef4668862d203658bc36fa5436a26f54324525e5",
-    "contracts/test/HookLaunchFixture.sol": "73febdeaf4a6975fd9d150e0f7e5d7a3185f0f9c6926b79c29aa2c4789577185",
+    "contracts/test/HookLaunchFixture.sol": "c864eee97a63aafe7688d8f3276f7a734a4ddccae95bc37c8779593d3c3ff0a2",
     "contracts/test/HookOracleAssertions.sol": "5324bf13b8da014903f14568ac27d9ca8823ad6402335471807acd9f1a49d95a",
-    "contracts/test/HookSmokeTest.sol": "39440ea49fcab890556f074f07c3e79e179e329dfa85e5e67ecd73e38e0501b7",
+    "contracts/test/HookSmokeTest.sol": "6aa5f6afe838b2d5dc7a2803a2ca74d9740353ddb8e2a8105b27adc97f32490f",
     "contracts/test/LaunchDeltaAccountingFixture.sol": "c2326dfd75466259472a9fb49c7b150c2bb5020ae869b940caf8cb63fefcf839",
     "contracts/test/NativeLaunchGraphFixture.sol": "95fd2ed5f7f5f1a27d45c341531f235169b8946610b4e8e2f9357655051a65cc",
     "contracts/test/PoolHookDeployer.t.sol": "595f5b0e1d072f3efae11f73b324e3bd5404de8a4e470ed11c14a0bac8cf3573",
@@ -194,9 +194,9 @@
   },
   "fork": {
     "chainId": 4663,
-    "block": 85367664,
-    "timestamp": 1791673234,
-    "blockHash": "0x22e7f3229ea63445bdb9899a6878bc3ddcac3e9dde0c4714eae5932c80f9525c",
+    "block": 85874315,
+    "timestamp": 1791725997,
+    "blockHash": "0x807427b03d586660c4280077b53869227d81201f833de89c6365abd29c415843",
     "rpcOrigin": "https://robinhood.drpc.org",
     "addresses": {
       "registry": "0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee",
@@ -262,127 +262,127 @@
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeConfiguredZeroHookFeeIsFree()",
       "status": "Success",
-      "gas": 25240481
+      "gas": 25304461
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeForeignPoolKeyRejectedByAuthenticatedCaller()",
       "status": "Success",
-      "gas": 20964413
+      "gas": 21025399
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeLaunchRejectsMarketBudgetsDifferentFromSupply()",
       "status": "Success",
-      "gas": 19466612
+      "gas": 19588221
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeLaunchRejectsMissingOrMalformedCustodyDescriptor()",
       "status": "Success",
-      "gas": 61814132
+      "gas": 61818326
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeLaunchRejectsNonzeroPoolLPFee()",
       "status": "Success",
-      "gas": 12491848
+      "gas": 12492911
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeLaunchRejectsPositionMaximumBudgetMismatch()",
       "status": "Success",
-      "gas": 8138573
+      "gas": 8199169
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeLaunchRejectsReducedAuthorPayment()",
       "status": "Success",
-      "gas": 19010657
+      "gas": 19011777
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeLaunchTradesAndExactRoyaltyClaims()",
       "status": "Success",
-      "gas": 43430197
+      "gas": 43562478
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeNoOracleHistoryBeforePoolInitialization()",
       "status": "Success",
-      "gas": 6765671
+      "gas": 6766779
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeOptionalOracleComposition()",
       "status": "Success",
-      "gas": 118272546
+      "gas": 118334655
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeRegisteredPayoutReceivesHookRoyalties()",
       "status": "Success",
-      "gas": 27792513
+      "gas": 27854268
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeRegistrationAcceptsCleanGetterWithTrailingData()",
       "status": "Success",
-      "gas": 25545850
+      "gas": 25609538
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeRegistrationAcceptsLifecycleGetterTrailingData()",
       "status": "Success",
-      "gas": 19720313
+      "gas": 19721411
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeRegistrationAcceptsStructuredGetterLayouts()",
       "status": "Success",
-      "gas": 69520830
+      "gas": 82322392
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeRegistrationBubblesGetterRevert()",
       "status": "Success",
-      "gas": 19410727
+      "gas": 19411804
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeRegistrationBubblesStructuredGetterReverts()",
       "status": "Success",
-      "gas": 37839525
+      "gas": 44239538
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeRegistrationRejectsDirtyUnusedLifecycleWords()",
       "status": "Success",
-      "gas": 84055536
+      "gas": 84062883
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeRegistrationRejectsMalformedGetterWords()",
       "status": "Success",
-      "gas": 65895262
+      "gas": 65900608
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeRegistrationRejectsMalformedStructuredGetters()",
       "status": "Success",
-      "gas": 349415699
+      "gas": 410276299
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeTradingRejectsPoolManagerProtocolFee()",
       "status": "Success",
-      "gas": 21055103
+      "gas": 21117098
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeUnauthenticatedCallbacksAndCollectionRejected()",
       "status": "Success",
-      "gas": 21450941
+      "gas": 21512166
     }
   ],
   "policy": [
@@ -390,115 +390,115 @@
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testActualFeeAcrossDustToWholeTokenSwapSizes()",
       "status": "Success",
-      "gas": 170266815
+      "gas": 170445783
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testActualFeeCurvesBaseline()",
       "status": "Success",
-      "gas": 203941864
+      "gas": 204140778
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testActualFeeCurvesDoubleSensitivity()",
       "status": "Success",
-      "gas": 211175699
+      "gas": 211374613
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testActualFeeCurvesEqualBounds()",
       "status": "Success",
-      "gas": 207600004
+      "gas": 207798918
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testActualFeeCurvesHigherMaximum()",
       "status": "Success",
-      "gas": 203211589
+      "gas": 203410503
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testActualFeeCurvesLowCeiling()",
       "status": "Success",
-      "gas": 206387753
+      "gas": 206586667
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testActualFeeCurvesLowerMinimum()",
       "status": "Success",
-      "gas": 211507988
+      "gas": 211706902
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testActualFeeCurvesZeroMinimum()",
       "status": "Success",
-      "gas": 212935266
+      "gas": 213134180
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testActualFeeCurvesZeroSensitivity()",
       "status": "Success",
-      "gas": 206892132
+      "gas": 207091046
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testActualFeeRoundingAtAdjacentRawSwapUnits()",
       "status": "Success",
-      "gas": 104544212
+      "gas": 104698879
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testContinuousMixedSizeTradesAtGranularCadences()",
       "status": "Success",
-      "gas": 76842103
+      "gas": 76987625
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testCreatorConfigurationsChangeActualFeesAndDecayWithWarp()",
       "status": "Success",
-      "gas": 136829516
+      "gas": 137172131
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testDenseSecondBySecondBaselineFees()",
       "status": "Success",
-      "gas": 429959280
+      "gas": 430242028
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testDenseSecondBySecondDoubleSensitivityFees()",
       "status": "Success",
-      "gas": 427784235
+      "gas": 428066983
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testDenseSecondBySecondLowCeilingFees()",
       "status": "Success",
-      "gas": 427652227
+      "gas": 427934975
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testDynamicExampleTracksObservedPriceVelocity()",
       "status": "Success",
-      "gas": 28184963
+      "gas": 28247108
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testPolicyLaunchBurnsUnusedInventory()",
       "status": "Success",
-      "gas": 42109511
+      "gas": 42234566
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testQuietTradingClearsClampedRiseAndNewRiseReactivatesFees()",
       "status": "Success",
-      "gas": 58732528
+      "gas": 58860838
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testSameBlockAndZeroSecondBlocksPreserveGenuineHistory()",
       "status": "Success",
-      "gas": 48409428
+      "gas": 48536351
     },
     {
       "suite": "hooks/dynamic-fee/test/Rate.t.sol:DynamicFeeRateTest",
@@ -797,5 +797,5 @@
   "limitations": "Locally generated observations, not a signed attestation, independent audit or author-control proof.",
   "productionAdmission": false,
   "ci": "not run: explicitly paused",
-  "recordSha256": "0e05240937687314d088f89392a82e3d5a5e08f1e79cb566d372ee7f22d31fdf"
+  "recordSha256": "9c95aac08c3616c6c0d38adc725fdc0a7e4d6e5550671a52b79fef79f520b9e7"
 }

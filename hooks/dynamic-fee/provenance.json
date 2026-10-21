@@ -1,7 +1,7 @@
 {
   "schema": "abyss-hooks.local-provenance.v1",
   "hook": "dynamic-fee",
-  "sourceCommit": "af8f0501d61eb09e91cae42322c367ff81c21583",
+  "sourceCommit": "b64acb4f3b9290cbb958d979edc7a06bc6b56dc7",
   "identity": "File hashes identify executed working-tree inputs; a commit label alone does not.",
   "sourceSha256": {
     "contracts/config/robinhood.json": "675d7b813c5b1cdda406910b9afe3dd818ab9d1046e648e315656e6db2293352",
@@ -162,7 +162,7 @@
     "hooks/dynamic-fee/DynamicFeeHook.sol": "c19a37585db2fe98b43a6bb75274194d311e6aef880888b5b25f8d503f9c9772",
     "hooks/dynamic-fee/hook.json": "a425ac88134ceeea6e9242b5efeb2c7688db4adca7029cd28bec9fc67915e769",
     "hooks/dynamic-fee/integration.json": "8486a62bcfa6080d5cb6425ff84f178581bea8a4ebcbb44883f6cd3d6e9e610f",
-    "hooks/dynamic-fee/review.md": "1c8c379f48404b1a14f7c849f3b9fd1367d0bf70e55d28dab492417bed0e2014",
+    "hooks/dynamic-fee/review.md": "c599b9f6dcabb8183a325f801c7583f8a9cce5687ab61fe0c146dd3c339c8744",
     "hooks/dynamic-fee/test/Policy.t.sol": "cdac706c38a1bb1517874a9c94a58cb4da77cfa2aa1efe3cafca4a274a30acc7",
     "hooks/dynamic-fee/test/Rate.t.sol": "e184980d91355eb0a8a7700e52684be2d169c04494061fcaa58f8fa6d472e46a",
     "hooks/dynamic-fee/test/Smoke.t.sol": "1ba7c95553b15048bad7fbd0f1a496dd6f622ed2e4b90f743a21de000fab0149",
@@ -194,10 +194,10 @@
   },
   "fork": {
     "chainId": 4663,
-    "block": 86082250,
-    "timestamp": 1791747314,
-    "blockHash": "0x41ed676806c2135afce62d158baed0aaa5ecae2d4f21a5c64514f1aabef05db1",
-    "rpcOrigin": "https://robinhood.drpc.org",
+    "block": 94563410,
+    "timestamp": 1792614812,
+    "blockHash": "0x7117c2e674d0b580acf7f875e486689d1178e1ce85214849c7e2f9b4f2f66ac7",
+    "rpcOrigin": "https://rpc.mainnet.chain.robinhood.com",
     "addresses": {
       "registry": "0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee",
       "core": "0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E",
@@ -304,7 +304,7 @@
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeLaunchTradesAndExactRoyaltyClaims()",
       "status": "Success",
-      "gas": 43562478
+      "gas": 43528452
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
@@ -316,19 +316,19 @@
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeOptionalOracleComposition()",
       "status": "Success",
-      "gas": 118334655
+      "gas": 118300455
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeRegisteredPayoutReceivesHookRoyalties()",
       "status": "Success",
-      "gas": 27854268
+      "gas": 27820068
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeRegistrationAcceptsCleanGetterWithTrailingData()",
       "status": "Success",
-      "gas": 25609538
+      "gas": 25575338
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
@@ -376,7 +376,7 @@
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
       "test": "testSmokeTradingRejectsPoolManagerProtocolFee()",
       "status": "Success",
-      "gas": 21117098
+      "gas": 21082898
     },
     {
       "suite": "hooks/dynamic-fee/test/Smoke.t.sol:DynamicFeeHookSmokeTest",
@@ -456,7 +456,7 @@
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testCreatorConfigurationsChangeActualFeesAndDecayWithWarp()",
       "status": "Success",
-      "gas": 137172131
+      "gas": 137001131
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
@@ -480,7 +480,7 @@
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
       "test": "testDynamicExampleTracksObservedPriceVelocity()",
       "status": "Success",
-      "gas": 28247108
+      "gas": 28212908
     },
     {
       "suite": "hooks/dynamic-fee/test/Policy.t.sol:DynamicFeeHookPolicyTest",
@@ -797,5 +797,5 @@
   "limitations": "Locally generated observations, not a signed attestation, independent audit or author-control proof.",
   "productionAdmission": false,
   "ci": "not run: explicitly paused",
-  "recordSha256": "d0aeaca76e4fbc89f5aee6ec023cef361c3e4d51efd07cceee1467d760260802"
+  "recordSha256": "c171a08965cd9dc803e37c535f2c543ba0fc1bbcdbc657ce5ca711654a332d77"
 }
